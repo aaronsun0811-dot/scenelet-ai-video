@@ -52,8 +52,8 @@ vi.mock("./ExportScopeDialog", () => ({
     ) : null,
 }));
 
-function renderHeader() {
-  const location = memoryLocation({ path: "/characters", record: true });
+function renderHeader(path = "/characters") {
+  const location = memoryLocation({ path, record: true });
   return {
     ...render(
       <Router hook={location.hook}>
@@ -480,6 +480,41 @@ describe("GlobalHeader", () => {
     screen.getByRole("button", { name: "下一步" }).click();
 
     expect(location.history?.at(-1)).toBe("/episodes/1");
+  });
+
+  it("hides the workflow next shortcut when it would only reopen the current overview", () => {
+    vi.spyOn(API, "getUsageStats").mockResolvedValue({
+      total_cost: 0,
+      image_count: 0,
+      video_count: 0,
+      failed_count: 0,
+      total_count: 0,
+    });
+
+    useProjectsStore.setState({
+      currentProjectName: "demo",
+      currentProjectData: {
+        title: "Setup Project",
+        content_mode: "narration",
+        style: "Anime",
+        status: {
+          current_phase: "setup",
+          phase_progress: 0,
+          characters: { total: 0, completed: 0 },
+          scenes: { total: 0, completed: 0 },
+          props: { total: 0, completed: 0 },
+          episodes_summary: { total: 0, scripted: 0, in_production: 0, completed: 0 },
+        },
+        episodes: [],
+        characters: {},
+        scenes: {},
+        props: {},
+      },
+    });
+
+    renderHeader("/");
+
+    expect(screen.queryByRole("button", { name: "下一步" })).not.toBeInTheDocument();
   });
 
   it("shows credit balance and a buy credits shortcut for platform-credit projects", async () => {

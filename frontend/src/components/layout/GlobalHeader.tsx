@@ -119,7 +119,7 @@ interface GlobalHeaderProps {
 
 export function GlobalHeader({ onNavigateBack }: GlobalHeaderProps) {
   const { t } = useTranslation();
-  const [, setLocation] = useLocation();
+  const [location, setLocation] = useLocation();
   const logout = useAuthStore((s) => s.logout);
   const { currentProjectData, currentProjectName } = useProjectsStore();
   const currentScripts = useProjectsStore((s) => s.currentScripts);
@@ -153,6 +153,12 @@ export function GlobalHeader({ onNavigateBack }: GlobalHeaderProps) {
 
   const currentPhase = currentProjectData?.status?.current_phase;
   const workflowNextStage = getProjectWorkflowNextStage(currentProjectData);
+  const isAtProjectOverview =
+    location === "/" ||
+    Boolean(currentProjectName && location === `/app/projects/${encodeURIComponent(currentProjectName)}`);
+  const showWorkflowNextStage =
+    Boolean(workflowNextStage) &&
+    !(workflowNextStage?.actionPath === "/" && isAtProjectOverview);
   const contentMode = currentProjectData?.content_mode;
   const runningCount = stats.running + stats.queued;
   const taskStatusTooltip =
@@ -458,7 +464,7 @@ export function GlobalHeader({ onNavigateBack }: GlobalHeaderProps) {
 
       {/* ---- Right section ---- */}
       <div className="flex items-center gap-3">
-        {workflowNextStage && (
+        {showWorkflowNextStage && workflowNextStage && (
           <button
             type="button"
             onClick={() => setLocation(workflowNextStage.actionPath)}
