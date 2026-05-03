@@ -35,6 +35,22 @@
 
 > 详细规格（画面比例、时长、数据结构、预处理 Agent 等）见 `.claude/references/generation-modes.md`。
 
+## 内容类型
+
+`project.json.content_type` 决定项目的创作工作流。`content_mode` 只决定数据结构，`content_type` 决定节奏、拆分方式和创作重点。
+
+| content_type | 名称 | 默认内容模式 | 默认画幅 | 默认生成模式 | 创作重点 |
+|---|---|---|---|---|---|
+| `scene_sketch` | 情景剧 | drama | 16:9 | storyboard | 多角色连续对话、生活化场面调度、几分钟节奏 |
+| `short_drama` | 短剧 | drama | 9:16 | storyboard | 开场钩子、冲突升级、反转、结尾悬念 |
+| `fiction_adaptation` | 小说改编 | drama | 9:16 | storyboard | 人物关系、章节节点、把心理叙述转成可拍画面 |
+| `narration_story` | 口播故事 | narration | 9:16 | storyboard | 旁白驱动、叙事节点清晰、画面服务讲述 |
+| `ad_story` | 广告剧情 | drama | 9:16 | reference_video | 痛点、产品入戏、卖点通过剧情呈现 |
+| `education_sketch` | 知识小剧场 | narration | 16:9 | storyboard | 问题、解释、示例、总结，讲解清晰 |
+| `travel_video` | 旅游视频 | narration | 16:9 | reference_video | 出发地、途经节点、抵达总结、街景/地图/参考图与导游讲解 |
+
+所有预处理 subagent 必须读取 `content_type` 并据此调整拆分策略。后端最终生成脚本时也会注入同一套 workflow 规则。
+
 ---
 
 ## 生成模式
@@ -149,6 +165,7 @@ projects/{项目名}/
 ├── grids/             # 宫格图（grid 模式）
 ├── videos/            # 生成的视频片段（storyboard / grid 模式）
 ├── reference_videos/  # 生成的 video_unit（reference_video 模式）
+├── travel_references/ # 旅游视频项目级参考图（人物/导游、街景、地图、地标）
 ├── thumbnails/        # 首帧缩略图
 └── output/            # 最终输出
 ```
@@ -156,8 +173,9 @@ projects/{项目名}/
 ### project.json 核心字段
 
 - `schema_version`：项目数据格式版本（当前 1）
-- `title`、`content_mode`（`narration`/`drama`）、`generation_mode`（`storyboard`/`grid`/`reference_video`）、`style`、`style_description`
+- `title`、`content_type`、`content_mode`（`narration`/`drama`）、`generation_mode`（`storyboard`/`grid`/`reference_video`）、`style`、`style_description`
 - `overview`：项目概述（synopsis、genre、theme、world_setting）
+- `travel_video_settings`：旅游视频配置（route_source、origin、destination、route_notes、route_preview、reference_images、target_duration、camera_style、narrator_persona）
 - `episodes`：剧集核心元数据（episode、title、script_file、可选 `generation_mode` 覆盖）
 - `characters`：角色完整定义（description、voice_style、character_sheet）
 - `scenes`：场景完整定义（description、scene_sheet）

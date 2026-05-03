@@ -26,7 +26,7 @@ description: 从剧本中提取角色 / 场景 / 道具三类资产定义，按 
 
 使用 Read 工具读取 `projects/{项目名}/project.json`，记录：
 - 已有的 characters、scenes 和 props 名称（后续跳过这些）
-- overview、style 字段（理解项目背景）
+- overview、style、content_type 字段（理解项目背景和内容形态）
 
 ### Step 2: 读取小说原文
 
@@ -55,6 +55,8 @@ description: 从剧本中提取角色 / 场景 / 道具三类资产定义，按 
 **道具提取规则**：
 - 提取重复出现或具有视觉特征的物品/道具
 - description 包含：外观细节、材质、尺寸参考、色彩特征
+- 如果 `content_type=ad_story`，产品、服务载体、包装、关键使用工具优先作为 props 提取，方便后续广告剧情把产品自然入戏。
+- 如果 `content_type=travel_video`，优先把“导游/讲解人”作为角色，把重要街口、商店街、地标、抵达点作为 scenes；地图截图、路牌、门头招牌、交通标识等仅在需要复用且有清晰视觉主体时写入 props。用户上传的 `travel_references/` 是项目级参考图，不要重复登记成角色/场景/道具，除非需要单独生成 sheet。
 
 ### Step 4: 调用脚本写入 project.json
 

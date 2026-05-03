@@ -5,6 +5,7 @@ from lib.db.models.api_key import ApiKey
 from lib.db.models.asset import Asset
 from lib.db.models.config import ProviderConfig, SystemSetting
 from lib.db.models.credential import ProviderCredential
+from lib.db.models.credit import CreditLedgerEntry, CreditReconciliationAudit
 from lib.db.models.custom_provider import CustomProvider, CustomProviderModel
 from lib.db.models.session import AgentSession
 from lib.db.models.task import Task, TaskEvent, WorkerLease
@@ -19,6 +20,8 @@ __all__ = [
     "ApiKey",
     "ProviderConfig",
     "SystemSetting",
+    "CreditLedgerEntry",
+    "CreditReconciliationAudit",
     "User",
     "ProviderCredential",
     "CustomProvider",

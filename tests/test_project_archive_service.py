@@ -10,6 +10,12 @@ from lib.project_manager import ProjectManager
 from server.services import project_archive as project_archive_module
 from server.services.project_archive import (
     ARCHIVE_MANIFEST_NAME,
+    DELIVERY_REPORT_JSON_NAME,
+    DELIVERY_REPORT_MARKDOWN_NAME,
+    MODEL_RULE_AUDIT_JSON_NAME,
+    MODEL_RULE_AUDIT_MARKDOWN_NAME,
+    TRAVEL_ROUTE_ASSETS_HTML_NAME,
+    TRAVEL_ROUTE_ASSETS_JSON_NAME,
     ProjectArchiveService,
     ProjectArchiveValidationError,
 )
@@ -241,6 +247,25 @@ class TestProjectArchiveService:
         assert result.conflict_resolution == "none"
         assert (pm.get_project_path("demo") / "videos" / "scene_E1S01.mp4").exists()
         assert (pm.get_project_path("demo") / "drafts" / "episode_2").is_dir()
+
+    def test_import_uses_current_user_namespace_and_owner(self, tmp_path):
+        source_pm = ProjectManager(tmp_path / "source-projects")
+        _create_project(source_pm)
+        archive_path, _ = ProjectArchiveService(source_pm).export_project("demo")
+
+        base_pm = ProjectManager(tmp_path / "projects")
+        bob_pm = base_pm.for_user("bob")
+        result = ProjectArchiveService(bob_pm).import_project_archive(
+            archive_path,
+            uploaded_filename="demo.zip",
+        )
+
+        imported_path = bob_pm.get_project_path(result.project_name)
+        assert ProjectManager.USER_PROJECTS_DIR in imported_path.parts
+        assert imported_path == bob_pm.get_project_storage_path(result.project_name)
+        assert result.project["owner_user_id"] == "bob"
+        assert bob_pm.load_project(result.project_name)["owner_user_id"] == "bob"
+        assert not (base_pm.projects_root / result.project_name).exists()
 
     def test_import_manual_zip_without_manifest(self, tmp_path):
         pm = ProjectManager(tmp_path / "projects")
@@ -707,6 +732,354 @@ class TestProjectArchiveService:
         assert exported_script["segments"][0]["props"] == []
         assert "clues_in_segment" not in exported_script["segments"][0]
         assert exported_script["segments"][0]["generated_assets"]["video_clip"] == "videos/scene_E1S01.mp4"
+
+    def test_export_includes_delivery_report_manifest_and_files(self, tmp_path):
+        pm = ProjectManager(tmp_path / "projects")
+        project_dir = _create_project(pm)
+        service = ProjectArchiveService(pm)
+        script = _build_episode_payload()
+        script["segments"][0]["generated_assets"]["video_thumbnail"] = None
+        script["segments"].append(
+            {
+                "segment_id": "E1S02",
+                "duration_seconds": 4,
+                "segment_break": False,
+                "novel_text": "第二段",
+                "characters_in_segment": ["Hero"],
+                "scenes": [],
+                "props": ["Key"],
+                "image_prompt": "img 2",
+                "video_prompt": "vid 2",
+                "transition_to_next": "cut",
+                "generated_assets": {
+                    "storyboard_image": "storyboards/scene_E1S02.png",
+                    "video_clip": None,
+                    "video_uri": None,
+                    "video_thumbnail": None,
+                    "status": "storyboard_ready",
+                },
+            }
+        )
+        _write_bytes(project_dir / "storyboards" / "scene_E1S02.png", b"png")
+        _write_json(project_dir / "scripts" / "episode_1.json", script)
+
+        archive_path, _ = service.export_project("demo", scope="current")
+
+        with zipfile.ZipFile(archive_path) as archive:
+            names = set(archive.namelist())
+            manifest = json.loads(archive.read(f"demo/{ARCHIVE_MANIFEST_NAME}"))
+            delivery_report = json.loads(archive.read(f"demo/{DELIVERY_REPORT_JSON_NAME}"))
+            delivery_markdown = archive.read(f"demo/{DELIVERY_REPORT_MARKDOWN_NAME}").decode("utf-8")
+
+        assert f"demo/{DELIVERY_REPORT_JSON_NAME}" in names
+        assert f"demo/{DELIVERY_REPORT_MARKDOWN_NAME}" in names
+        assert manifest["delivery_report"] == delivery_report
+        assert delivery_report["status"] == "needs_work"
+        assert delivery_report["totals"]["videos_ready"] == 1
+        assert delivery_report["totals"]["videos_total"] == 2
+        assert delivery_report["totals"]["blocking_issues"] == 1
+        assert delivery_report["totals"]["warnings"] == 1
+        episode_report = delivery_report["episodes"][0]
+        assert episode_report["videos"]["missing"] == ["E1S02"]
+        assert episode_report["warnings"][0]["code"] == "missing_video_thumbnails"
+        assert "交付状态: 需处理" in delivery_markdown
+        assert "1 个视频未生成" in delivery_markdown
+
+    def test_export_includes_model_rule_audit_manifest_and_files(self, tmp_path, monkeypatch):
+        pm = ProjectManager(tmp_path / "projects")
+        _create_project(pm)
+        service = ProjectArchiveService(pm)
+
+        def fake_load_tasks(self, project_name):
+            assert project_name == "demo"
+            return [
+                {
+                    "task_id": "task-video-1",
+                    "project_name": "demo",
+                    "task_type": "video",
+                    "media_type": "video",
+                    "resource_id": "E1S01",
+                    "script_file": "scripts/episode_1.json",
+                    "payload": {
+                        "model_rule_summary": {
+                            "task_type": "video",
+                            "media_type": "video",
+                            "rule_target": "__media__/video",
+                            "mode": "github_skill",
+                            "mode_label": "GitHub Skill",
+                            "provider_id": "runway",
+                            "model_id": "gen-4",
+                            "target_label": "Runway · gen-4",
+                            "skill_name": "cinematic-skill",
+                            "billing_mode": "platform_credits",
+                        }
+                    },
+                    "status": "succeeded",
+                    "source": "webui",
+                    "queued_at": "2026-05-03T01:00:00+08:00",
+                    "started_at": "2026-05-03T01:01:00+08:00",
+                    "finished_at": "2026-05-03T01:02:00+08:00",
+                    "updated_at": "2026-05-03T01:02:00+08:00",
+                }
+            ]
+
+        monkeypatch.setattr(ProjectArchiveService, "_load_model_rule_audit_tasks", fake_load_tasks)
+
+        archive_path, _ = service.export_project("demo", scope="current")
+
+        with zipfile.ZipFile(archive_path) as archive:
+            names = set(archive.namelist())
+            manifest = json.loads(archive.read(f"demo/{ARCHIVE_MANIFEST_NAME}"))
+            delivery_report = json.loads(archive.read(f"demo/{DELIVERY_REPORT_JSON_NAME}"))
+            delivery_markdown = archive.read(f"demo/{DELIVERY_REPORT_MARKDOWN_NAME}").decode("utf-8")
+            audit_report = json.loads(archive.read(f"demo/{MODEL_RULE_AUDIT_JSON_NAME}"))
+            audit_markdown = archive.read(f"demo/{MODEL_RULE_AUDIT_MARKDOWN_NAME}").decode("utf-8")
+
+        assert f"demo/{MODEL_RULE_AUDIT_JSON_NAME}" in names
+        assert f"demo/{MODEL_RULE_AUDIT_MARKDOWN_NAME}" in names
+        assert manifest["model_rule_audit"] == audit_report
+        assert audit_report["total"] == 1
+        assert audit_report["by_mode"] == {"github_skill": 1}
+        assert audit_report["by_media_type"] == {"video": 1}
+        assert audit_report["items"][0]["rule"]["skill_name"] == "cinematic-skill"
+        assert delivery_report["model_rule_audit"]["total"] == 1
+        assert MODEL_RULE_AUDIT_JSON_NAME in delivery_report["model_rule_audit"]["artifact_files"]
+        assert "## 模型规则审计" in delivery_markdown
+        assert MODEL_RULE_AUDIT_MARKDOWN_NAME in delivery_markdown
+        assert "GitHub Skill" in audit_markdown
+        assert "cinematic-skill" in audit_markdown
+
+    def test_export_manifest_uses_content_type_workflow_defaults(self, tmp_path):
+        pm = ProjectManager(tmp_path / "projects")
+        _create_project(pm)
+        project = pm.load_project("demo")
+        project["content_type"] = "scene_sketch"
+        project["content_mode"] = "narration"
+        project.pop("aspect_ratio", None)
+        project.pop("generation_mode", None)
+        pm.save_project("demo", project)
+        service = ProjectArchiveService(pm)
+
+        archive_path, _ = service.export_project("demo", scope="full")
+
+        with zipfile.ZipFile(archive_path) as archive:
+            manifest = json.loads(archive.read(f"demo/{ARCHIVE_MANIFEST_NAME}"))
+            exported_project = json.loads(archive.read("demo/project.json"))
+
+        assert manifest["content_type"] == "scene_sketch"
+        assert manifest["content_mode"] == "drama"
+        assert manifest["aspect_ratio"] == "16:9"
+        assert manifest["generation_mode"] == "storyboard"
+        assert exported_project["content_mode"] == "drama"
+        assert exported_project["aspect_ratio"] == "16:9"
+        assert exported_project["generation_mode"] == "storyboard"
+
+    def test_export_preflight_blocks_travel_video_without_route_preview(self, tmp_path):
+        pm = ProjectManager(tmp_path / "projects")
+        _create_project(pm)
+        project = pm.load_project("demo")
+        project["content_type"] = "travel_video"
+        project["travel_video_settings"] = {
+            "route_source": "manual",
+            "origin": "难波站",
+            "destination": "黑门市场",
+            "route_notes": "从车站步行到市场，沿途介绍街景。",
+        }
+        pm.save_project("demo", project)
+        service = ProjectArchiveService(pm)
+
+        preflight = service.get_export_preflight("demo", scope="current")
+
+        blocking_codes = {item["code"] for item in preflight["diagnostics"]["blocking"]}
+        assert "travel_route_preview_missing" in blocking_codes
+
+    def test_export_preflight_blocks_failed_travel_route_preview(self, tmp_path):
+        pm = ProjectManager(tmp_path / "projects")
+        _create_project(pm)
+        project = pm.load_project("demo")
+        project["content_type"] = "travel_video"
+        project["travel_video_settings"] = {
+            "route_source": "google_street_view",
+            "origin": "难波站",
+            "destination": "黑门市场",
+            "route_preview": {
+                "source": "manual",
+                "route_ready": False,
+                "nodes": [],
+                "reference_images": [],
+                "warnings": [
+                    {
+                        "code": "google_route_status",
+                        "message": "Google 路线解析未返回可用路线：ZERO_RESULTS",
+                    }
+                ],
+            },
+        }
+        pm.save_project("demo", project)
+        service = ProjectArchiveService(pm)
+
+        preflight = service.get_export_preflight("demo", scope="current")
+
+        blocking = preflight["diagnostics"]["blocking"]
+        assert any(item["code"] == "travel_route_preview_not_ready" for item in blocking)
+        assert any("ZERO_RESULTS" in item["message"] for item in blocking)
+
+    def test_export_includes_travel_references_for_ready_travel_video(self, tmp_path):
+        pm = ProjectManager(tmp_path / "projects")
+        project_dir = _create_project(pm)
+        _write_bytes(project_dir / "travel_references" / "street.png", b"png")
+        _write_bytes(project_dir / "reference_videos" / "E1U1.mp4", b"mp4")
+        _write_bytes(project_dir / "reference_videos" / "thumbnails" / "E1U1.jpg", b"jpg")
+        project = pm.load_project("demo")
+        project["content_type"] = "travel_video"
+        project["travel_video_settings"] = {
+            "route_source": "reference_images",
+            "origin": "难波站",
+            "destination": "黑门市场",
+            "reference_images": ["travel_references/street.png"],
+            "route_preview": {
+                "source": "reference_images",
+                "route_ready": True,
+                "summary": "使用上传参考图生成路线。",
+                "distance_text": "1.2 km",
+                "duration_text": "15 mins",
+                "nodes": [
+                    {
+                        "id": "reference-1",
+                        "label": "参考图 1",
+                        "instruction": "travel_references/street.png",
+                        "source": "reference_image",
+                    }
+                ],
+                "reference_images": ["travel_references/street.png"],
+                "warnings": [],
+            },
+        }
+        pm.save_project("demo", project)
+        _write_json(
+            project_dir / "scripts" / "episode_1.json",
+            {
+                "episode": 1,
+                "title": "第一集",
+                "content_mode": "reference_video",
+                "summary": "沿路线抵达市场",
+                "novel": {"title": "Demo", "chapter": "第一章"},
+                "duration_seconds": 4,
+                "video_units": [
+                    {
+                        "unit_id": "E1U1",
+                        "shots": [
+                            {
+                                "duration": 4,
+                                "text": "Shot 1 (4s): 沿参考图 1 的街景向前走，保持导游口播节奏。",
+                            }
+                        ],
+                        "references": [],
+                        "duration_seconds": 4,
+                        "duration_override": False,
+                        "transition_to_next": "cut",
+                        "note": None,
+                        "generated_assets": {
+                            "storyboard_image": None,
+                            "storyboard_last_image": None,
+                            "grid_id": None,
+                            "grid_cell_index": None,
+                            "video_clip": "reference_videos/E1U1.mp4",
+                            "video_uri": None,
+                            "video_thumbnail": "reference_videos/thumbnails/E1U1.jpg",
+                            "status": "completed",
+                        },
+                    }
+                ],
+            },
+        )
+        service = ProjectArchiveService(pm)
+
+        preflight = service.get_export_preflight("demo", scope="current")
+        assert preflight["travel_route_assets"]["node_coverage"]["covered"] == 1
+        assert preflight["travel_route_assets"]["reference_images"]["items"][0]["path"] == "travel_references/street.png"
+
+        archive_path, _ = service.export_project("demo", scope="current")
+
+        with zipfile.ZipFile(archive_path) as archive:
+            names = set(archive.namelist())
+            manifest = json.loads(archive.read(f"demo/{ARCHIVE_MANIFEST_NAME}"))
+            delivery_report = json.loads(archive.read(f"demo/{DELIVERY_REPORT_JSON_NAME}"))
+            delivery_markdown = archive.read(f"demo/{DELIVERY_REPORT_MARKDOWN_NAME}").decode("utf-8")
+            route_assets = json.loads(archive.read(f"demo/{TRAVEL_ROUTE_ASSETS_JSON_NAME}"))
+            route_assets_html = archive.read(f"demo/{TRAVEL_ROUTE_ASSETS_HTML_NAME}").decode("utf-8")
+
+        blocking_codes = {item["code"] for item in manifest["export_diagnostics"]["blocking"]}
+        warning_codes = {item["code"] for item in manifest["export_diagnostics"]["warnings"]}
+        assert "demo/travel_references/street.png" in names
+        assert f"demo/{TRAVEL_ROUTE_ASSETS_JSON_NAME}" in names
+        assert f"demo/{TRAVEL_ROUTE_ASSETS_HTML_NAME}" in names
+        assert "travel_route_missing" not in blocking_codes
+        assert "travel_route_preview_missing" not in blocking_codes
+        assert "travel_reference_images_missing_files" not in warning_codes
+        assert delivery_report["travel_route"]["summary"] == "使用上传参考图生成路线。"
+        assert delivery_report["travel_route"]["nodes_total"] == 1
+        assert delivery_report["travel_route"]["nodes_covered"] == 1
+        assert delivery_report["travel_route"]["reference_images_count"] == 1
+        assert delivery_report["travel_route"]["usable_reference_images_count"] == 1
+        assert delivery_report["travel_route"]["nodes"][0]["matched_units"] == ["E1U1"]
+        assert "## 旅游路线检查" in delivery_markdown
+        assert "路线节点覆盖: 1 / 1" in delivery_markdown
+        assert "参考图数量: 1 / 1 可用" in delivery_markdown
+        assert manifest["travel_route_assets"]["node_coverage"]["covered"] == 1
+        assert route_assets["route"]["summary"] == "使用上传参考图生成路线。"
+        assert route_assets["node_coverage"] == {"total": 1, "covered": 1, "missing": []}
+        assert route_assets["reference_images"]["items"][0]["path"] == "travel_references/street.png"
+        assert route_assets["reference_images"]["items"][0]["html_src"] == "../travel_references/street.png"
+        assert route_assets["reference_images"]["items"][0]["used_by_nodes"] == ["reference-1"]
+        assert route_assets["nodes"][0]["matched_units"] == ["E1U1"]
+        assert route_assets["nodes"][0]["matched_unit_details"] == [
+            {
+                "id": "E1U1",
+                "episode": 1,
+                "title": "第一集",
+                "script_file": "scripts/episode_1.json",
+                "video_clip": "reference_videos/E1U1.mp4",
+                "video_thumbnail": "reference_videos/thumbnails/E1U1.jpg",
+                "status": "completed",
+            }
+        ]
+        assert route_assets["nodes"][0]["reference_images"] == ["travel_references/street.png"]
+        assert "Scenelet 旅游路线素材清单" in route_assets_html
+        assert "../travel_references/street.png" in route_assets_html
+        assert "E1U1 · E1 · 第一集" in route_assets_html
+        assert "E1U1" in route_assets_html
+
+    def test_import_repairs_project_workflow_fields_from_content_type(self, tmp_path):
+        pm = ProjectManager(tmp_path / "projects")
+        project_dir = _create_project(pm)
+        service = ProjectArchiveService(pm)
+
+        project = pm.load_project("demo")
+        project["content_type"] = "scene_sketch"
+        project["content_mode"] = "narration"
+        project.pop("aspect_ratio", None)
+        project.pop("generation_mode", None)
+        _write_json(project_dir / "project.json", project)
+
+        archive_path = tmp_path / "workflow-repair.zip"
+        _make_manual_zip(project_dir, archive_path)
+        shutil.rmtree(project_dir)
+
+        result = service.import_project_archive(
+            archive_path,
+            uploaded_filename="workflow-repair.zip",
+        )
+
+        imported_project = pm.load_project(result.project_name)
+        auto_fixed_codes = {item["code"] for item in result.diagnostics["auto_fixed"]}
+        assert imported_project["content_type"] == "scene_sketch"
+        assert imported_project["content_mode"] == "drama"
+        assert imported_project["aspect_ratio"] == "16:9"
+        assert imported_project["generation_mode"] == "storyboard"
+        assert "content_mode_repaired" in auto_fixed_codes
+        assert "aspect_ratio_backfilled" in auto_fixed_codes
+        assert "generation_mode_backfilled" in auto_fixed_codes
 
 
 class TestExportScope:

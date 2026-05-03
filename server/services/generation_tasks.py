@@ -15,10 +15,13 @@ if TYPE_CHECKING:
 from lib import PROJECT_ROOT
 from lib.asset_types import ASSET_SPECS
 from lib.config.registry import PROVIDER_REGISTRY
+from lib.content_workflows import get_workflow_preset
 from lib.custom_provider import is_custom_provider
-from lib.db.base import DEFAULT_USER_ID
+from lib.db.base import DEFAULT_USER_ID, PLATFORM_USER_ID
+from lib.default_duration import normalize_project_default_duration
 from lib.gemini_shared import get_shared_rate_limiter
 from lib.media_generator import MediaGenerator
+from lib.model_rules import append_model_rule_for_model
 from lib.project_change_hints import emit_project_change_batch, project_change_source
 from lib.project_manager import ProjectManager
 from lib.prompt_builders import build_character_prompt, build_prop_prompt, build_scene_prompt
@@ -28,7 +31,8 @@ from lib.prompt_utils import (
     is_structured_video_prompt,
     video_prompt_to_yaml,
 )
-from lib.providers import PROVIDER_ARK, PROVIDER_GEMINI, PROVIDER_GROK, PROVIDER_OPENAI
+from lib.provider_base_urls import resolve_provider_base_url
+from lib.providers import PROVIDER_ARK, PROVIDER_GEMINI, PROVIDER_GROK, PROVIDER_NEWAPI, PROVIDER_OPENAI
 from lib.storyboard_sequence import (
     build_previous_storyboard_reference,
     find_storyboard_item,
@@ -37,6 +41,7 @@ from lib.storyboard_sequence import (
     resolve_previous_storyboard_path,
 )
 from lib.thumbnail import extract_video_thumbnail
+from server.services.project_access import project_manager_for_user
 from server.services.resolution_resolver import resolve_resolution
 
 pm = ProjectManager(PROJECT_ROOT / "projects")
@@ -54,6 +59,30 @@ _PROVIDER_ID_TO_BACKEND: dict[str, str] = {
     PROVIDER_ARK: PROVIDER_ARK,
     PROVIDER_GROK: PROVIDER_GROK,
     PROVIDER_OPENAI: PROVIDER_OPENAI,
+    "baidu": PROVIDER_OPENAI,
+    "qwen": PROVIDER_OPENAI,
+    "zhipu": PROVIDER_OPENAI,
+    "deepseek": PROVIDER_OPENAI,
+    "moonshot": PROVIDER_OPENAI,
+    "minimax": PROVIDER_OPENAI,
+    "hunyuan": PROVIDER_OPENAI,
+    "anthropic": PROVIDER_OPENAI,
+    "midjourney": PROVIDER_OPENAI,
+    "jimeng": PROVIDER_OPENAI,
+}
+_VIDEO_PROVIDER_ID_TO_BACKEND: dict[str, str] = {
+    **_PROVIDER_ID_TO_BACKEND,
+    "luma": PROVIDER_NEWAPI,
+    "pika": PROVIDER_NEWAPI,
+    "runway": PROVIDER_NEWAPI,
+    "kling": PROVIDER_NEWAPI,
+    "minimax": PROVIDER_NEWAPI,
+    "jimeng": PROVIDER_NEWAPI,
+}
+_IMAGE_PROVIDER_ID_TO_BACKEND: dict[str, str] = {
+    **_PROVIDER_ID_TO_BACKEND,
+    "midjourney": PROVIDER_OPENAI,
+    "jimeng": PROVIDER_OPENAI,
 }
 
 
@@ -61,9 +90,18 @@ def get_project_manager() -> ProjectManager:
     return pm
 
 
+def get_project_manager_for_user(user_id: str | None) -> ProjectManager:
+    return project_manager_for_user(get_project_manager(), user_id)
+
+
 def invalidate_backend_cache() -> None:
     """清空 VideoBackend 实例缓存。在配置变更后调用。"""
     _backend_cache.clear()
+
+
+def resolve_credential_user_id(project: dict, user_id: str = DEFAULT_USER_ID) -> str:
+    """Return whose provider credentials should be used for this project."""
+    return PLATFORM_USER_ID if project.get("billing_mode") == "platform_credits" else user_id
 
 
 def _parse_project_backend(raw: str | None) -> tuple[str | None, str | None]:
@@ -76,7 +114,12 @@ def _parse_project_backend(raw: str | None) -> tuple[str | None, str | None]:
     return raw, None
 
 
-async def _resolve_effective_image_backend(project: dict, payload: dict | None) -> tuple[str, str]:
+async def _resolve_effective_image_backend(
+    project: dict,
+    payload: dict | None,
+    *,
+    user_id: str = DEFAULT_USER_ID,
+) -> tuple[str, str]:
     """payload 覆盖 > project.image_backend > resolver 全局默认。
 
     返回 (provider_id, model_id)。供 resolve_resolution 构 key 使用，
@@ -93,7 +136,7 @@ async def _resolve_effective_image_backend(project: dict, payload: dict | None) 
     from lib.config.resolver import ConfigResolver
     from lib.db import async_session_factory
 
-    resolver = ConfigResolver(async_session_factory)
+    resolver = ConfigResolver(async_session_factory, user_id=resolve_credential_user_id(project, user_id))
     try:
         async with resolver.session() as r:
             provider, model = await r.default_image_backend()
@@ -102,7 +145,13 @@ async def _resolve_effective_image_backend(project: dict, payload: dict | None) 
     return provider or "", model or ""
 
 
-async def _create_custom_backend(provider_name: str, model_id: str | None, media_type: str):
+async def _create_custom_backend(
+    provider_name: str,
+    model_id: str | None,
+    media_type: str,
+    *,
+    user_id: str = DEFAULT_USER_ID,
+):
     """自定义供应商的 backend 创建路径。
 
     media_type 仅用于回退到默认模型时分组（仍接收以兼容调用方调用语义）。
@@ -115,7 +164,7 @@ async def _create_custom_backend(provider_name: str, model_id: str | None, media
     from lib.db.repositories.custom_provider_repo import CustomProviderRepository
 
     async with async_session_factory() as session:
-        repo = CustomProviderRepository(session)
+        repo = CustomProviderRepository(session, user_id=user_id)
         db_id = parse_provider_id(provider_name)
         provider = await repo.get_provider(db_id)
         if provider is None:
@@ -123,18 +172,8 @@ async def _create_custom_backend(provider_name: str, model_id: str | None, media
 
         model = None
         if model_id:
-            from sqlalchemy import select
-
-            from lib.db.models.custom_provider import CustomProviderModel
-
-            stmt = select(CustomProviderModel).where(
-                CustomProviderModel.provider_id == db_id,
-                CustomProviderModel.model_id == model_id,
-                CustomProviderModel.is_enabled == True,  # noqa: E712
-            )
-            result = await session.execute(stmt)
-            candidate = result.scalar_one_or_none()
-            if candidate and endpoint_to_media_type(candidate.endpoint) == media_type:
+            candidate = await repo.get_model_by_ids(db_id, model_id)
+            if candidate and candidate.is_enabled and endpoint_to_media_type(candidate.endpoint) == media_type:
                 model = candidate
             else:
                 logger.warning(
@@ -171,18 +210,23 @@ async def _get_or_create_video_backend(
     from lib.video_backends import create_backend
 
     effective_model = provider_settings.get("model") or default_video_model or None
-    cache_key = ("video", provider_name, effective_model)
+    cache_key = (resolver.user_id, "video", provider_name, effective_model)
     if cache_key in _backend_cache:
         return _backend_cache[cache_key]
 
     # 自定义供应商走独立工厂路径
     if is_custom_provider(provider_name):
-        backend = await _create_custom_backend(provider_name, effective_model, "video")
+        backend = await _create_custom_backend(
+            provider_name,
+            effective_model,
+            "video",
+            user_id=resolver.user_id,
+        )
         _backend_cache[cache_key] = backend
         return backend
 
     # 解析 provider_id → backend registry name
-    backend_name = _PROVIDER_ID_TO_BACKEND.get(provider_name, provider_name)
+    backend_name = _VIDEO_PROVIDER_ID_TO_BACKEND.get(provider_name, provider_name)
 
     kwargs: dict = {}
     if backend_name == PROVIDER_GEMINI:
@@ -200,7 +244,7 @@ async def _get_or_create_video_backend(
         kwargs["rate_limiter"] = rate_limiter
         kwargs["video_model"] = effective_model
     else:
-        await _fill_simple_provider_kwargs(backend_name, resolver, kwargs, effective_model)
+        await _fill_simple_provider_kwargs(provider_name, backend_name, resolver, kwargs, effective_model)
 
     backend = create_backend(backend_name, **kwargs)
     _backend_cache[cache_key] = backend
@@ -208,16 +252,22 @@ async def _get_or_create_video_backend(
 
 
 async def _fill_simple_provider_kwargs(
+    config_provider_id: str,
     backend_name: str,
     resolver: ConfigResolver,
     kwargs: dict,
     effective_model: str | None,
 ) -> None:
     """Ark/Grok/OpenAI 等简单供应商的通用配置填充。"""
-    db_config = await resolver.provider_config(backend_name)
+    db_config = await resolver.provider_config(config_provider_id)
     kwargs["api_key"] = db_config.get("api_key")
     kwargs["model"] = effective_model
-    if base_url := db_config.get("base_url"):
+    base_url = (
+        resolve_provider_base_url(config_provider_id, db_config.get("base_url"))
+        if backend_name == PROVIDER_OPENAI
+        else db_config.get("base_url")
+    )
+    if base_url:
         kwargs["base_url"] = base_url
 
 
@@ -232,17 +282,22 @@ async def _get_or_create_image_backend(
     from lib.image_backends import create_backend
 
     effective_model = provider_settings.get("model") or default_image_model or None
-    cache_key = ("image", provider_name, effective_model)
+    cache_key = (resolver.user_id, "image", provider_name, effective_model)
     if cache_key in _backend_cache:
         return _backend_cache[cache_key]
 
     # 自定义供应商走独立工厂路径
     if is_custom_provider(provider_name):
-        backend = await _create_custom_backend(provider_name, effective_model, "image")
+        backend = await _create_custom_backend(
+            provider_name,
+            effective_model,
+            "image",
+            user_id=resolver.user_id,
+        )
         _backend_cache[cache_key] = backend
         return backend
 
-    backend_name = _PROVIDER_ID_TO_BACKEND.get(provider_name, provider_name)
+    backend_name = _IMAGE_PROVIDER_ID_TO_BACKEND.get(provider_name, provider_name)
 
     kwargs: dict = {}
     if backend_name == PROVIDER_GEMINI:
@@ -257,7 +312,7 @@ async def _get_or_create_image_backend(
         kwargs["rate_limiter"] = rate_limiter
         kwargs["image_model"] = effective_model
     else:
-        await _fill_simple_provider_kwargs(backend_name, resolver, kwargs, effective_model)
+        await _fill_simple_provider_kwargs(provider_name, backend_name, resolver, kwargs, effective_model)
 
     backend = create_backend(backend_name, **kwargs)
     _backend_cache[cache_key] = backend
@@ -268,6 +323,8 @@ async def _resolve_video_backend(
     project_name: str,
     resolver: ConfigResolver,
     payload: dict | None,
+    *,
+    user_id: str = DEFAULT_USER_ID,
 ) -> tuple[Any | None, str, str]:
     """解析视频后端，返回 (video_backend, video_backend_type, video_model)。
 
@@ -281,14 +338,14 @@ async def _resolve_video_backend(
 
     if payload:
         # provider 统一从项目配置 → 全局默认解析，调用方无需传递
-        project = await asyncio.to_thread(get_project_manager().load_project, project_name)
+        project = await asyncio.to_thread(get_project_manager_for_user(user_id).load_project, project_name)
 
         # 从 project.json 的 video_backend（"provider/model" 格式）解析
         provider_name, project_model = _parse_project_backend(project.get("video_backend"))
 
         if not provider_name:
             provider_name = default_video_provider_id
-            mapped = _PROVIDER_ID_TO_BACKEND.get(provider_name, provider_name)
+            mapped = _VIDEO_PROVIDER_ID_TO_BACKEND.get(provider_name, provider_name)
             if mapped == PROVIDER_GEMINI:
                 video_backend_type = "vertex" if default_video_provider_id == "gemini-vertex" else "aistudio"
 
@@ -314,8 +371,10 @@ async def get_media_generator(
     from lib.config.resolver import ConfigResolver
     from lib.db import async_session_factory
 
-    project_path = await asyncio.to_thread(get_project_manager().get_project_path, project_name)
-    resolver = ConfigResolver(async_session_factory)
+    manager = get_project_manager_for_user(user_id)
+    project_path = await asyncio.to_thread(manager.get_project_path, project_name)
+    project = await asyncio.to_thread(manager.load_project, project_name)
+    resolver = ConfigResolver(async_session_factory, user_id=resolve_credential_user_id(project, user_id))
 
     # 初始化阶段共享单一 session
     async with resolver.session() as r:
@@ -328,7 +387,6 @@ async def get_media_generator(
                 image_model = payload.get("image_model", "") or image_model
             else:
                 # 直接从 project.json 的 image_backend（"provider/model" 格式）读取
-                project = await asyncio.to_thread(get_project_manager().load_project, project_name)
                 proj_provider, proj_model = _parse_project_backend(project.get("image_backend"))
                 if proj_provider:
                     # 仅当 provider 相同时才复用全局默认 model，避免跨 provider model 不匹配
@@ -342,11 +400,17 @@ async def get_media_generator(
             )
 
         # 解析 video backend（保持现有逻辑）
-        video_backend, _, _ = await _resolve_video_backend(
-            project_name,
-            r,
-            payload,
-        )
+        try:
+            video_backend, _, _ = await _resolve_video_backend(
+                project_name,
+                r,
+                payload,
+                user_id=user_id,
+            )
+        except TypeError as exc:
+            if "user_id" not in str(exc):
+                raise
+            video_backend, _, _ = await _resolve_video_backend(project_name, r, payload)
 
     # 传原始 resolver 给 MediaGenerator（后续调用在 session scope 外）
     return MediaGenerator(
@@ -355,6 +419,7 @@ async def get_media_generator(
         image_backend=image_backend,
         video_backend=video_backend,
         config_resolver=resolver,
+        project_config=project,
         user_id=user_id,
     )
 
@@ -364,12 +429,16 @@ def get_aspect_ratio(project: dict, resource_type: str) -> str:
         return "3:4"
     if resource_type in ("scenes", "props"):
         return "16:9"
-    # 优先读顶层字段；缺失时按 content_mode 推导（向后兼容）
+    # 优先读顶层字段；缺失时按内容类型预设推导，最后按 content_mode 兼容旧项目。
     val = project.get("aspect_ratio")
     if isinstance(val, str):
         return val
     if isinstance(val, dict) and resource_type in val:
         return val[resource_type]
+    content_type = project.get("content_type")
+    workflow_preset = get_workflow_preset(content_type if isinstance(content_type, str) else None)
+    if workflow_preset is not None:
+        return workflow_preset.aspect_ratio
     return "9:16" if project.get("content_mode", "narration") == "narration" else "16:9"
 
 
@@ -531,11 +600,11 @@ def _collect_reference_images(
     return reference_images or None
 
 
-def _resolve_script_episode(project_name: str, script_file: str | None) -> int | None:
+def _resolve_script_episode(project_name: str, script_file: str | None, *, user_id: str = DEFAULT_USER_ID) -> int | None:
     if not script_file:
         return None
     try:
-        script = get_project_manager().load_script(project_name, script_file)
+        script = get_project_manager_for_user(user_id).load_script(project_name, script_file)
     except Exception:
         return None
 
@@ -545,10 +614,16 @@ def _resolve_script_episode(project_name: str, script_file: str | None) -> int |
     return None
 
 
-def _compute_affected_fingerprints(project_name: str, task_type: str, resource_id: str) -> dict[str, int]:
+def _compute_affected_fingerprints(
+    project_name: str,
+    task_type: str,
+    resource_id: str,
+    *,
+    user_id: str = DEFAULT_USER_ID,
+) -> dict[str, int]:
     """计算受影响文件的 mtime 指纹"""
     try:
-        project_path = get_project_manager().get_project_path(project_name)
+        project_path = get_project_manager_for_user(user_id).get_project_path(project_name)
     except Exception:
         return {}
 
@@ -635,19 +710,62 @@ _TASK_CHANGE_SPECS: dict[str, tuple] = {
 }
 
 
+def _build_generation_focus(
+    task_type: str,
+    resource_id: str,
+    payload: dict[str, Any],
+    episode: int | None,
+) -> dict[str, Any] | None:
+    if not isinstance(episode, int):
+        return None
+
+    if task_type in {"storyboard", "video"}:
+        return {
+            "pane": "episode",
+            "episode": episode,
+            "anchor_type": "segment",
+            "anchor_id": resource_id,
+        }
+
+    if task_type == "reference_video":
+        return {
+            "pane": "episode",
+            "episode": episode,
+            "anchor_type": "reference-unit",
+            "anchor_id": resource_id,
+        }
+
+    if task_type == "grid":
+        scene_ids = payload.get("scene_ids")
+        if not isinstance(scene_ids, list):
+            return None
+        first_scene_id = next((str(item) for item in scene_ids if str(item or "").strip()), "")
+        if not first_scene_id:
+            return None
+        return {
+            "pane": "episode",
+            "episode": episode,
+            "anchor_type": "segment",
+            "anchor_id": first_scene_id,
+        }
+
+    return None
+
+
 def _emit_generation_success_batch(
     *,
     task_type: str,
     project_name: str,
     resource_id: str,
     payload: dict[str, Any],
+    user_id: str = DEFAULT_USER_ID,
 ) -> None:
     spec = _TASK_CHANGE_SPECS.get(task_type)
     if spec is None:
         return
 
     entity_type, action, label_tpl, include_script_episode = spec
-    asset_fingerprints = _compute_affected_fingerprints(project_name, task_type, resource_id)
+    asset_fingerprints = _compute_affected_fingerprints(project_name, task_type, resource_id, user_id=user_id)
 
     change: dict[str, Any] = {
         "entity_type": entity_type,
@@ -660,11 +778,13 @@ def _emit_generation_success_batch(
     }
     if include_script_episode:
         script_file = str(payload.get("script_file") or "") or None
+        episode = _resolve_script_episode(project_name, script_file, user_id=user_id)
         change["script_file"] = script_file
-        change["episode"] = _resolve_script_episode(project_name, script_file)
+        change["episode"] = episode
+        change["focus"] = _build_generation_focus(task_type, resource_id, payload, episode)
 
     try:
-        emit_project_change_batch(project_name, [change], source="worker")
+        emit_project_change_batch(project_name, [change], source="worker", user_id=user_id)
     except Exception:
         logger.exception(
             "发送生成完成项目事件失败 project=%s task_type=%s resource_id=%s",
@@ -686,9 +806,10 @@ async def execute_storyboard_task(
         raise ValueError("prompt is required for storyboard task")
 
     def _prepare():
-        _project = get_project_manager().load_project(project_name)
-        _project_path = get_project_manager().get_project_path(project_name)
-        _script = get_project_manager().load_script(project_name, script_file)
+        _pm = get_project_manager_for_user(user_id)
+        _project = _pm.load_project(project_name)
+        _project_path = _pm.get_project_path(project_name)
+        _script = _pm.load_script(project_name, script_file)
         _items, _id_field, _char_field, _scene_field, _prop_field = get_storyboard_items(_script)
 
         _resolved = find_storyboard_item(_items, _id_field, resource_id)
@@ -719,8 +840,15 @@ async def execute_storyboard_task(
     )
     aspect_ratio = get_aspect_ratio(project, "storyboards")
 
-    image_provider_id, image_model_id = await _resolve_effective_image_backend(project, payload)
+    image_provider_id, image_model_id = await _resolve_effective_image_backend(project, payload, user_id=user_id)
     image_size = await resolve_resolution(project, image_provider_id, image_model_id)
+    prompt_text = await append_model_rule_for_model(
+        prompt_text,
+        provider_id=image_provider_id,
+        model_id=image_model_id,
+        media_type="image",
+        user_id=resolve_credential_user_id(project, user_id),
+    )
 
     _, version = await generator.generate_image_async(
         prompt=prompt_text,
@@ -732,7 +860,7 @@ async def execute_storyboard_task(
     )
 
     def _finalize():
-        get_project_manager().update_scene_asset(
+        get_project_manager_for_user(user_id).update_scene_asset(
             project_name=project_name,
             script_filename=script_file,
             scene_id=resource_id,
@@ -764,7 +892,7 @@ async def execute_video_task(
         raise ValueError("prompt is required for video task")
 
     def _load():
-        _pm = get_project_manager()
+        _pm = get_project_manager_for_user(user_id)
         _project = _pm.load_project(project_name)
         _project_path = _pm.get_project_path(project_name)
         _script = _pm.load_script(project_name, script_file)
@@ -807,14 +935,14 @@ async def execute_video_task(
         from lib.config.resolver import ConfigResolver
         from lib.db import async_session_factory
 
-        _resolver = ConfigResolver(async_session_factory)
+        _resolver = ConfigResolver(async_session_factory, user_id=resolve_credential_user_id(project, user_id))
         try:
             default_provider_id, default_model_id = await _resolver.default_video_backend()
         except Exception:
             default_provider_id, default_model_id = "gemini-aistudio", "veo-3.1-lite-generate-preview"
         registry_provider_id = default_provider_id
         model_name = model_name or default_model_id
-        provider_name = _PROVIDER_ID_TO_BACKEND.get(default_provider_id, default_provider_id)
+        provider_name = _VIDEO_PROVIDER_ID_TO_BACKEND.get(default_provider_id, default_provider_id)
 
     resolution = await resolve_resolution(
         project,
@@ -822,10 +950,19 @@ async def execute_video_task(
         model_name or "",
     )
 
-    # duration fallback: payload > project.default_duration > supported_durations[0] > 4
-    duration_seconds = payload.get("duration_seconds") or project.get("default_duration")
+    # duration fallback: payload > explicit project.default_duration > supported_durations[0] > 4
+    duration_seconds = payload.get("duration_seconds") or normalize_project_default_duration(project)
     if not duration_seconds:
         duration_seconds = _get_model_default_duration(registry_provider_id, model_name)
+
+    prompt_text = await append_model_rule_for_model(
+        prompt_text,
+        provider_id=registry_provider_id or provider_name,
+        model_id=model_name or "",
+        backend_name=provider_name,
+        media_type="video",
+        user_id=resolve_credential_user_id(project, user_id),
+    )
 
     end_image = None  # 宫格模式不再使用首尾帧，统一走普通图生视频
 
@@ -843,7 +980,8 @@ async def execute_video_task(
     )
 
     def _update_video_metadata():
-        get_project_manager().update_scene_asset(
+        _pm = get_project_manager_for_user(user_id)
+        _pm.update_scene_asset(
             project_name=project_name,
             script_filename=script_file,
             scene_id=resource_id,
@@ -851,7 +989,7 @@ async def execute_video_task(
             asset_path=f"videos/scene_{resource_id}.mp4",
         )
         if video_uri:
-            get_project_manager().update_scene_asset(
+            _pm.update_scene_asset(
                 project_name=project_name,
                 script_filename=script_file,
                 scene_id=resource_id,
@@ -866,7 +1004,7 @@ async def execute_video_task(
     thumbnail_file = project_path / f"thumbnails/scene_{resource_id}.jpg"
     if await extract_video_thumbnail(video_file, thumbnail_file):
         await asyncio.to_thread(
-            get_project_manager().update_scene_asset,
+            get_project_manager_for_user(user_id).update_scene_asset,
             project_name=project_name,
             script_filename=script_file,
             scene_id=resource_id,
@@ -898,14 +1036,22 @@ async def execute_character_task(
         raise ValueError("prompt is required for character task")
 
     def _prepare_char():
-        _project = get_project_manager().load_project(project_name)
-        _project_path = get_project_manager().get_project_path(project_name)
+        _pm = get_project_manager_for_user(user_id)
+        _project = _pm.load_project(project_name)
+        _project_path = _pm.get_project_path(project_name)
         if resource_id not in _project.get("characters", {}):
             raise ValueError(f"character not found: {resource_id}")
         _char_data = _project["characters"][resource_id]
         _style = _project.get("style", "")
         _style_desc = _project.get("style_description", "")
-        _full_prompt = build_character_prompt(resource_id, prompt, _style, _style_desc)
+        _character_style = _project.get("character_style_prompt", "")
+        _full_prompt = build_character_prompt(
+            resource_id,
+            prompt,
+            _style,
+            _style_desc,
+            str(_character_style or ""),
+        )
         _ref_images = None
         _ref_path = _char_data.get("reference_image")
         if _ref_path:
@@ -919,8 +1065,15 @@ async def execute_character_task(
     generator = await get_media_generator(project_name, payload=payload, user_id=user_id)
     aspect_ratio = get_aspect_ratio(project, "characters")
 
-    image_provider_id, image_model_id = await _resolve_effective_image_backend(project, payload)
+    image_provider_id, image_model_id = await _resolve_effective_image_backend(project, payload, user_id=user_id)
     image_size = await resolve_resolution(project, image_provider_id, image_model_id)
+    full_prompt = await append_model_rule_for_model(
+        full_prompt,
+        provider_id=image_provider_id,
+        model_id=image_model_id,
+        media_type="image",
+        user_id=resolve_credential_user_id(project, user_id),
+    )
 
     _, version = await generator.generate_image_async(
         prompt=full_prompt,
@@ -937,7 +1090,7 @@ async def execute_character_task(
         def _set_character_sheet(p: dict) -> None:
             p["characters"][resource_id]["character_sheet"] = sheet_path
 
-        get_project_manager().update_project(project_name, _set_character_sheet)
+        get_project_manager_for_user(user_id).update_project(project_name, _set_character_sheet)
         return generator.versions.get_versions("characters", resource_id)["versions"][-1]["created_at"]
 
     created_at = await asyncio.to_thread(_finalize_char)
@@ -977,7 +1130,7 @@ async def execute_design_task(
         raise ValueError(f"prompt is required for {kind} task")
 
     def _prepare():
-        project = get_project_manager().load_project(project_name)
+        project = get_project_manager_for_user(user_id).load_project(project_name)
         if resource_id not in project.get(bucket_key, {}):
             raise ValueError(f"{kind} not found: {resource_id}")
         style = project.get("style", "")
@@ -990,8 +1143,15 @@ async def execute_design_task(
     generator = await get_media_generator(project_name, payload=payload, user_id=user_id)
     aspect_ratio = get_aspect_ratio(project, bucket_key)
 
-    image_provider_id, image_model_id = await _resolve_effective_image_backend(project, payload)
+    image_provider_id, image_model_id = await _resolve_effective_image_backend(project, payload, user_id=user_id)
     image_size = await resolve_resolution(project, image_provider_id, image_model_id)
+    full_prompt = await append_model_rule_for_model(
+        full_prompt,
+        provider_id=image_provider_id,
+        model_id=image_model_id,
+        media_type="image",
+        user_id=resolve_credential_user_id(project, user_id),
+    )
 
     _, version = await generator.generate_image_async(
         prompt=full_prompt,
@@ -1004,7 +1164,7 @@ async def execute_design_task(
     sheet_path = f"{bucket_key}/{resource_id}.png"
 
     def _finalize():
-        get_project_manager()._update_asset_sheet(kind, project_name, resource_id, sheet_path)
+        get_project_manager_for_user(user_id)._update_asset_sheet(kind, project_name, resource_id, sheet_path)
         return generator.versions.get_versions(bucket_key, resource_id)["versions"][-1]["created_at"]
 
     created_at = await asyncio.to_thread(_finalize)
@@ -1058,12 +1218,8 @@ def _collect_grid_reference_images(
 
     project = json.loads(project_json.read_text(encoding="utf-8"))
 
-    script_file = payload.get("script_file")
-    if not script_file:
-        return None, []
-
-    script_path = project_path / "scripts" / script_file
-    if not script_path.exists():
+    script_path = _resolve_grid_script_path(project_path, payload.get("script_file"))
+    if script_path is None or not script_path.exists():
         return None, []
 
     script = json.loads(script_path.read_text(encoding="utf-8"))
@@ -1113,6 +1269,27 @@ def _collect_grid_reference_images(
     return list(paths[:max_count]) or None, metadata[:max_count]
 
 
+def _resolve_grid_script_path(project_path: Path, script_file: Any) -> Path | None:
+    """Resolve a grid script path inside ``project_path/scripts``.
+
+    Grid records may store either ``episode_1.json`` or ``scripts/episode_1.json``.
+    Normalize both forms while keeping the path bounded to the scripts directory.
+    """
+    rel = str(script_file or "").strip()
+    if not rel:
+        return None
+    if rel.startswith("scripts/"):
+        rel = rel[len("scripts/") :]
+
+    scripts_dir = (project_path / "scripts").resolve(strict=False)
+    candidate = (scripts_dir / rel).resolve(strict=False)
+    try:
+        candidate.relative_to(scripts_dir)
+    except ValueError:
+        return None
+    return candidate
+
+
 async def execute_grid_task(
     project_name: str, resource_id: str, payload: dict[str, Any], *, user_id: str = DEFAULT_USER_ID
 ) -> dict[str, Any]:
@@ -1130,7 +1307,8 @@ async def execute_grid_task(
     from lib.grid.splitter import split_grid_image
     from lib.grid_manager import GridManager
 
-    project_path = await asyncio.to_thread(get_project_manager().get_project_path, project_name)
+    manager = get_project_manager_for_user(user_id)
+    project_path = await asyncio.to_thread(manager.get_project_path, project_name)
     grid_manager = GridManager(project_path)
 
     # a) Load grid
@@ -1166,10 +1344,10 @@ async def execute_grid_task(
             user_id=user_id,
         )
 
-        project = await asyncio.to_thread(get_project_manager().load_project, project_name)
+        project = await asyncio.to_thread(manager.load_project, project_name)
         aspect_ratio = payload.get("grid_aspect_ratio") or get_aspect_ratio(project, "storyboards")
 
-        image_provider_id, image_model_id = await _resolve_effective_image_backend(project, payload)
+        image_provider_id, image_model_id = await _resolve_effective_image_backend(project, payload, user_id=user_id)
         image_size = await resolve_resolution(project, image_provider_id, image_model_id) or "2K"  # 宫格图保底高分辨率
 
         image_path, version = await generator.generate_image_async(
@@ -1218,7 +1396,7 @@ async def execute_grid_task(
 
             # Batch-write all asset updates in one script read+write pass
             if asset_updates:
-                get_project_manager().batch_update_scene_assets(
+                manager.batch_update_scene_assets(
                     project_name=project_name,
                     script_filename=script_file,
                     updates=asset_updates,
@@ -1290,5 +1468,6 @@ async def execute_generation_task(task: dict[str, Any]) -> dict[str, Any]:
             project_name=project_name,
             resource_id=resource_id,
             payload=payload,
+            user_id=user_id,
         )
         return result

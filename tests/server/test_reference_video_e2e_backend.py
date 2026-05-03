@@ -39,6 +39,7 @@ def seeded_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Test
         json.dumps(
             {
                 "title": "T",
+                "owner_user_id": "u1",
                 "content_mode": "reference_video",
                 "generation_mode": "reference_video",
                 "style": "s",

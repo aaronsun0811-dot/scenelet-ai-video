@@ -7,9 +7,23 @@ import VolcengineColor from "@lobehub/icons/es/Volcengine/components/Color";
 export const PROVIDER_NAMES: Record<string, string> = {
   "gemini-aistudio": "AI Studio",
   "gemini-vertex": "Vertex AI",
-  ark: "火山方舟",
+  ark: "豆包 / 火山方舟",
   grok: "Grok",
   openai: "OpenAI",
+  baidu: "文心一言",
+  qwen: "通义千问",
+  zhipu: "智谱 GLM",
+  deepseek: "DeepSeek",
+  moonshot: "Kimi",
+  minimax: "MiniMax",
+  hunyuan: "腾讯混元",
+  anthropic: "Anthropic Claude",
+  midjourney: "Midjourney",
+  luma: "Luma",
+  pika: "Pika",
+  runway: "Runway",
+  kling: "可灵",
+  jimeng: "即梦",
 };
 
 /**

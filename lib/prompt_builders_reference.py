@@ -14,6 +14,16 @@ def _format_asset_names(assets: dict | None) -> str:
     )
 
 
+def _format_workflow_block(workflow_instructions: str | None) -> str:
+    if not workflow_instructions or not workflow_instructions.strip():
+        return ""
+    return f"""
+<workflow>
+{workflow_instructions.strip()}
+</workflow>
+"""
+
+
 def build_reference_video_prompt(
     *,
     project_overview: dict,
@@ -27,6 +37,7 @@ def build_reference_video_prompt(
     max_refs: int,
     max_duration: int | None = None,
     aspect_ratio: str = "9:16",
+    workflow_instructions: str | None = None,
     target_language: str = "中文",
 ) -> str:
     """构建参考生视频模式的 LLM Prompt。
@@ -59,6 +70,7 @@ def build_reference_video_prompt(
 **重要：所有输出内容必须使用{target_language}。仅 JSON 键名和枚举值使用英文。**
 
 1. 你将获得故事概述、视觉风格、已注册的角色/场景/道具列表，以及 Step 1 已拆分好的 video_units 表。
+   如果提供 workflow，请优先遵循其中的内容类型目标、结构规则和视觉规则。
 
 2. 为每个 video_unit 生成 `ReferenceVideoScript.video_units[]` 数组项，并遵循如下约束：
 
@@ -75,6 +87,7 @@ def build_reference_video_prompt(
 描述：{style_description}
 画面比例：{aspect_ratio}
 </style>
+{_format_workflow_block(workflow_instructions)}
 
 <characters>
 {_format_asset_names(characters)}

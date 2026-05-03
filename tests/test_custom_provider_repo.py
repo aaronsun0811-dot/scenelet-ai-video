@@ -90,6 +90,32 @@ class TestProviderCRUD:
         repo = CustomProviderRepository(session)
         assert await repo.get_provider(999) is None
 
+    async def test_scopes_providers_by_user(self, session: AsyncSession):
+        repo_a = CustomProviderRepository(session, user_id="user-a")
+        repo_b = CustomProviderRepository(session, user_id="user-b")
+
+        provider_a = await repo_a.create_provider(
+            display_name="User A Provider",
+            discovery_format="openai",
+            base_url="https://a.example.com/v1",
+            api_key="key-a",
+            models=[
+                {
+                    "model_id": "gpt-a",
+                    "display_name": "GPT A",
+                    "endpoint": "openai-chat",
+                    "is_default": True,
+                    "is_enabled": True,
+                }
+            ],
+        )
+        await session.flush()
+
+        assert await repo_b.get_provider(provider_a.id) is None
+        assert await repo_b.list_models(provider_a.id) == []
+        assert await repo_b.list_all_enabled_models() == []
+        assert len(await repo_a.list_all_enabled_models()) == 1
+
     async def test_list_providers(self, session: AsyncSession):
         repo = CustomProviderRepository(session)
         await repo.create_provider(

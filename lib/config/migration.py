@@ -38,6 +38,9 @@ _SYSTEM_SETTING_KEYS: list[str] = [
     "anthropic_default_opus_model",
     "anthropic_default_sonnet_model",
     "claude_code_subagent_model",
+    "google_maps_api_key",
+    "baidu_maps_api_key",
+    "amap_maps_api_key",
 ]
 
 _HANDLED_KEYS = {
@@ -61,14 +64,35 @@ _HANDLED_KEYS = {
 } | set(_SYSTEM_SETTING_KEYS)
 
 
+def _safe_json_read_error(exc: OSError | json.JSONDecodeError) -> str:
+    if isinstance(exc, json.JSONDecodeError):
+        return f"invalid JSON at line {exc.lineno} column {exc.colno}"
+    return exc.__class__.__name__
+
+
 async def migrate_json_to_db(session: AsyncSession, json_path: Path) -> None:
     if not json_path.exists():
         return
 
     logger.info("Migrating %s to database...", json_path)
-    text = await asyncio.to_thread(json_path.read_text)
-    data = json.loads(text)
+    try:
+        text = await asyncio.to_thread(json_path.read_text)
+        data = json.loads(text)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning(
+            "Skipping legacy config migration for %s: %s",
+            json_path,
+            _safe_json_read_error(exc),
+        )
+        return
+    if not isinstance(data, dict):
+        logger.warning("Skipping legacy config migration for %s: root is not a JSON object", json_path)
+        return
+
     overrides: dict = data.get("overrides", {})
+    if not isinstance(overrides, dict):
+        logger.warning("Skipping legacy config migration for %s: overrides is not a JSON object", json_path)
+        return
 
     provider_repo = ProviderConfigRepository(session)
     setting_repo = SystemSettingRepository(session)
@@ -135,7 +159,7 @@ async def migrate_json_to_db(session: AsyncSession, json_path: Path) -> None:
     # 6. Catch-all: remaining override keys → system_setting
     for key, value in overrides.items():
         if key not in _HANDLED_KEYS:
-            logger.warning("迁移未知配置项: %s=%s", key, value)
+            logger.warning("迁移未知配置项: %s", key)
             await setting_repo.set(key, str(value))
 
     await session.commit()

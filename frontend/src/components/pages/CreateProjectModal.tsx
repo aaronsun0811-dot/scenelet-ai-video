@@ -8,11 +8,20 @@ import { useTranslation } from "react-i18next";
 import { API } from "@/api";
 import { useProjectsStore } from "@/stores/projects-store";
 import { useAppStore } from "@/stores/app-store";
-import { DEFAULT_TEMPLATE_ID } from "@/data/style-templates";
+import { DEFAULT_CONTENT_TYPE, getContentTypePreset } from "@/data/content-types";
+import {
+  getDefaultTemplateForContentType,
+  getTemplateById,
+} from "@/data/style-templates";
 import { PROVIDER_NAMES } from "@/components/ui/ProviderIcon";
 import { useFocusTrap } from "@/hooks/useFocusTrap";
 import { useEscapeClose } from "@/hooks/useEscapeClose";
-import { WizardStep1Basics, type WizardStep1Value } from "./create-project/WizardStep1Basics";
+import {
+  DEFAULT_TRAVEL_VIDEO_SETTINGS,
+  WizardStep1Basics,
+  type TravelVideoSettingsDraft,
+  type WizardStep1Value,
+} from "./create-project/WizardStep1Basics";
 import { WizardStep2Models, type WizardStep2Data } from "./create-project/WizardStep2Models";
 import { WizardStep3Style, type WizardStep3Value } from "./create-project/WizardStep3Style";
 import type { ModelConfigValue } from "@/components/shared/ModelConfigSection";
@@ -24,6 +33,8 @@ const STEPS = [
   { num: 2, key: "wizard_step_models" },
   { num: 3, key: "wizard_step_style" },
 ] as const;
+
+const DEFAULT_CONTENT_PRESET = getContentTypePreset(DEFAULT_CONTENT_TYPE);
 
 function StepIndicator({ current }: { current: 1 | 2 | 3 }) {
   const { t } = useTranslation("templates");
@@ -79,10 +90,15 @@ export function CreateProjectModal() {
 
   const [basics, setBasics] = useState<WizardStep1Value>({
     title: "",
-    contentMode: "narration",
-    aspectRatio: "9:16",
-    generationMode: "storyboard",
+    contentType: DEFAULT_CONTENT_TYPE,
+    billingMode: "byok",
+    contentMode: DEFAULT_CONTENT_PRESET?.contentMode ?? "drama",
+    aspectRatio: DEFAULT_CONTENT_PRESET?.aspectRatio ?? "16:9",
+    generationMode: DEFAULT_CONTENT_PRESET?.generationMode ?? "storyboard",
   });
+  const [travelVideoSettings, setTravelVideoSettings] =
+    useState<TravelVideoSettingsDraft>(DEFAULT_TRAVEL_VIDEO_SETTINGS);
+  const [travelReferenceFiles, setTravelReferenceFiles] = useState<File[]>([]);
 
   const [models, setModels] = useState<ModelConfigValue>({
     videoBackend: "",
@@ -90,15 +106,16 @@ export function CreateProjectModal() {
     textBackendScript: "",
     textBackendOverview: "",
     textBackendStyle: "",
-    defaultDuration: null,
+    defaultDuration: DEFAULT_CONTENT_PRESET?.defaultDuration ?? null,
     videoResolution: null,
     imageResolution: null,
   });
 
+  const initialTemplateId = DEFAULT_CONTENT_PRESET?.defaultStyleTemplateId ?? getDefaultTemplateForContentType(DEFAULT_CONTENT_TYPE);
   const [style, setStyle] = useState<WizardStep3Value>({
     mode: "template",
-    templateId: DEFAULT_TEMPLATE_ID,
-    activeCategory: "live",
+    templateId: initialTemplateId,
+    activeCategory: getTemplateById(initialTemplateId)?.category ?? "content",
     uploadedFile: null,
     uploadedPreview: null,
   });
@@ -158,6 +175,35 @@ export function CreateProjectModal() {
     setShowCreateModal(false);
   };
 
+  const handleBasicsChange = (next: WizardStep1Value) => {
+    const previousContentType = basics.contentType;
+    setBasics(next);
+    if (next.contentType === previousContentType) return;
+
+    const previousPreset = getContentTypePreset(previousContentType);
+    const nextPreset = getContentTypePreset(next.contentType);
+    setModels((prev) => {
+      const shouldFollowContentType =
+        prev.defaultDuration === null
+        || prev.defaultDuration === previousPreset?.defaultDuration;
+      return shouldFollowContentType
+        ? { ...prev, defaultDuration: nextPreset?.defaultDuration ?? prev.defaultDuration }
+        : prev;
+    });
+
+    const previousDefaultTemplate = getDefaultTemplateForContentType(previousContentType);
+    const nextDefaultTemplate = nextPreset?.defaultStyleTemplateId ?? getDefaultTemplateForContentType(next.contentType);
+    const nextCategory = getTemplateById(nextDefaultTemplate)?.category ?? "content";
+    setStyle((prev) => {
+      const canFollowContentType =
+        prev.mode === "template"
+        && (prev.templateId === previousDefaultTemplate || prev.templateId === null);
+      return canFollowContentType
+        ? { ...prev, mode: "template", templateId: nextDefaultTemplate, activeCategory: nextCategory }
+        : prev;
+    });
+  };
+
   useEscapeClose(() => setShowCreateModal(false));
 
   // 背景 inert：打开期间屏蔽 #root 内容（modal 通过 portal 挂到 body，
@@ -193,11 +239,14 @@ export function CreateProjectModal() {
 
       const resp = await API.createProject({
         title: basics.title.trim(),
+        content_type: basics.contentType,
+        billing_mode: basics.billingMode,
         content_mode: basics.contentMode,
         aspect_ratio: basics.aspectRatio,
         generation_mode: basics.generationMode,
         default_duration: models.defaultDuration,
         style_template_id: style.mode === "template" ? style.templateId : null,
+        ...(basics.contentType === "travel_video" ? { travel_video_settings: travelVideoSettings } : {}),
         video_backend: models.videoBackend || null,
         image_backend: models.imageBackend || null,
         text_backend_script: models.textBackendScript || null,
@@ -205,6 +254,29 @@ export function CreateProjectModal() {
         text_backend_style: models.textBackendStyle || null,
         ...(Object.keys(modelSettings).length > 0 ? { model_settings: modelSettings } : {}),
       });
+
+      if (basics.contentType === "travel_video" && travelReferenceFiles.length > 0) {
+        try {
+          const uploaded = await Promise.all(
+            travelReferenceFiles.map((file) => API.uploadFile(resp.name, "travel_reference", file)),
+          );
+          const referenceImages = uploaded.map((item) => item.path).filter(Boolean);
+          await API.updateProject(resp.name, {
+            travel_video_settings: {
+              ...travelVideoSettings,
+              reference_images: [
+                ...travelVideoSettings.reference_images,
+                ...referenceImages,
+              ],
+            },
+          });
+        } catch (err) {
+          useAppStore.getState().pushToast(
+            t("dashboard:travel_video_reference_upload_failed", { message: errMsg(err) }),
+            "warning",
+          );
+        }
+      }
 
       // Upload style image if in custom mode
       if (style.mode === "custom" && style.uploadedFile) {
@@ -219,7 +291,8 @@ export function CreateProjectModal() {
       }
 
       setShowCreateModal(false);
-      navigate(`/app/projects/${resp.name}`);
+      useAppStore.getState().pushToast(t("dashboard:project_created_workflow_guide"), "success");
+      navigate(`/app/projects/${resp.name}?workflow=quickstart`);
     } catch (err) {
       useAppStore.getState().pushToast(
         `${t("dashboard:create_project_failed")}${errMsg(err)}`,
@@ -268,7 +341,11 @@ export function CreateProjectModal() {
           {step === 1 && (
             <WizardStep1Basics
               value={basics}
-              onChange={setBasics}
+              travelVideoSettings={travelVideoSettings}
+              travelReferenceFiles={travelReferenceFiles}
+              onChange={handleBasicsChange}
+              onTravelVideoSettingsChange={setTravelVideoSettings}
+              onTravelReferenceFilesChange={setTravelReferenceFiles}
               onNext={() => setStep(2)}
               onCancel={handleClose}
             />

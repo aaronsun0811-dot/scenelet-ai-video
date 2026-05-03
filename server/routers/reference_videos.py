@@ -15,9 +15,16 @@ from pydantic import BaseModel, Field
 from lib import PROJECT_ROOT
 from lib.asset_types import BUCKET_KEY
 from lib.generation_queue import get_generation_queue
+from lib.i18n import Translator
 from lib.project_manager import ProjectManager
 from lib.reference_video import parse_prompt
 from server.auth import CurrentUser
+from server.services.billing import (
+    ensure_platform_credits_balance,
+    estimate_generation_task_credits,
+    reserve_platform_credits_for_task_or_cancel,
+)
+from server.services.project_access import load_project_for_user, project_manager_for_user
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +38,10 @@ pm = ProjectManager(PROJECT_ROOT / "projects")
 
 def get_project_manager() -> ProjectManager:
     return pm
+
+
+def get_project_manager_for_user(user_id: str | None) -> ProjectManager:
+    return project_manager_for_user(get_project_manager(), user_id)
 
 
 # ============ 请求模型 ============
@@ -52,10 +63,11 @@ class AddUnitRequest(BaseModel):
 # ============ 辅助 ============
 
 
-def _load_episode_script(project_name: str, episode: int) -> tuple[dict, dict, str]:
+def _load_episode_script(project_name: str, episode: int, *, user_id: str, _t: Translator) -> tuple[dict, dict, str]:
     """加载 project.json + 指定集的剧本。返回 (project, script, script_file)。"""
     try:
-        project = get_project_manager().load_project(project_name)
+        manager = get_project_manager_for_user(user_id)
+        project = load_project_for_user(get_project_manager(), project_name, user_id=user_id, translate=_t)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     episodes = project.get("episodes") or []
@@ -64,7 +76,7 @@ def _load_episode_script(project_name: str, episode: int) -> tuple[dict, dict, s
         raise HTTPException(status_code=404, detail=f"episode {episode} not found")
     script_file = meta["script_file"]
     try:
-        script = get_project_manager().load_script(project_name, script_file)
+        script = manager.load_script(project_name, script_file)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     if script.get("content_mode") != "reference_video":
@@ -134,8 +146,8 @@ def _build_unit_dict(
 
 
 @router.get("/episodes/{episode}/units")
-async def list_units(project_name: str, episode: int, _user: CurrentUser) -> dict[str, Any]:
-    _project, script, _sf = _load_episode_script(project_name, episode)
+async def list_units(project_name: str, episode: int, _user: CurrentUser, _t: Translator) -> dict[str, Any]:
+    _project, script, _sf = _load_episode_script(project_name, episode, user_id=_user.id, _t=_t)
     return {"units": script.get("video_units") or []}
 
 
@@ -145,8 +157,9 @@ async def add_unit(
     episode: int,
     req: AddUnitRequest,
     _user: CurrentUser,
+    _t: Translator,
 ) -> dict[str, Any]:
-    project, script, script_file = _load_episode_script(project_name, episode)
+    project, script, script_file = _load_episode_script(project_name, episode, user_id=_user.id, _t=_t)
 
     refs = [r.model_dump() for r in req.references]
     _validate_references_exist(project, refs)
@@ -160,7 +173,7 @@ async def add_unit(
         note=req.note,
     )
     script.setdefault("video_units", []).append(unit)
-    get_project_manager().save_script(project_name, script, script_file)
+    get_project_manager_for_user(_user.id).save_script(project_name, script, script_file)
     return {"unit": unit}
 
 
@@ -189,8 +202,9 @@ async def patch_unit(
     unit_id: str,
     req: PatchUnitRequest,
     _user: CurrentUser,
+    _t: Translator,
 ) -> dict[str, Any]:
-    project, script, script_file = _load_episode_script(project_name, episode)
+    project, script, script_file = _load_episode_script(project_name, episode, user_id=_user.id, _t=_t)
     unit = _find_unit(script, unit_id)
 
     if req.references is not None:
@@ -215,7 +229,7 @@ async def patch_unit(
     if req.note is not None:
         unit["note"] = req.note
 
-    get_project_manager().save_script(project_name, script, script_file)
+    get_project_manager_for_user(_user.id).save_script(project_name, script, script_file)
     return {"unit": unit}
 
 
@@ -225,14 +239,15 @@ async def delete_unit(
     episode: int,
     unit_id: str,
     _user: CurrentUser,
+    _t: Translator,
 ) -> Response:
-    _project, script, script_file = _load_episode_script(project_name, episode)
+    _project, script, script_file = _load_episode_script(project_name, episode, user_id=_user.id, _t=_t)
     units = script.get("video_units") or []
     new_units = [u for u in units if u.get("unit_id") != unit_id]
     if len(new_units) == len(units):
         raise HTTPException(status_code=404, detail=f"unit {unit_id} not found")
     script["video_units"] = new_units
-    get_project_manager().save_script(project_name, script, script_file)
+    get_project_manager_for_user(_user.id).save_script(project_name, script, script_file)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -246,8 +261,9 @@ async def reorder_units(
     episode: int,
     req: ReorderRequest,
     _user: CurrentUser,
+    _t: Translator,
 ) -> dict[str, Any]:
-    _project, script, script_file = _load_episode_script(project_name, episode)
+    _project, script, script_file = _load_episode_script(project_name, episode, user_id=_user.id, _t=_t)
     units = script.get("video_units") or []
     existing_ids = [u.get("unit_id") for u in units]
 
@@ -260,7 +276,7 @@ async def reorder_units(
 
     by_id = {u["unit_id"]: u for u in units}
     script["video_units"] = [by_id[uid] for uid in req.unit_ids]
-    get_project_manager().save_script(project_name, script, script_file)
+    get_project_manager_for_user(_user.id).save_script(project_name, script, script_file)
     return {"units": script["video_units"]}
 
 
@@ -273,9 +289,31 @@ async def generate_unit(
     episode: int,
     unit_id: str,
     _user: CurrentUser,
+    _t: Translator,
 ) -> dict[str, Any]:
-    _project, script, script_file = _load_episode_script(project_name, episode)
-    _find_unit(script, unit_id)  # raises 404 if missing
+    _project, script, script_file = _load_episode_script(project_name, episode, user_id=_user.id, _t=_t)
+    unit = _find_unit(script, unit_id)  # raises 404 if missing
+    payload = {
+        "script_file": script_file,
+        "duration_seconds": unit.get("duration_seconds"),
+    }
+    required_credits = await estimate_generation_task_credits(
+        _project,
+        "reference_video",
+        payload,
+        user_id=_user.id,
+        project_name=project_name,
+    )
+    await ensure_platform_credits_balance(_project, _user.id, required_credits=required_credits)
+    from server.routers.generate import _payload_with_model_rule_summary
+
+    task_payload = await _payload_with_model_rule_summary(
+        _project,
+        payload,
+        task_type="reference_video",
+        media_type="video",
+        user_id=_user.id,
+    )
 
     queue = get_generation_queue()
     result = await queue.enqueue_task(
@@ -283,9 +321,19 @@ async def generate_unit(
         task_type="reference_video",
         media_type="video",
         resource_id=unit_id,
-        payload={"script_file": script_file},
+        payload=task_payload,
         script_file=script_file,
         source="webui",
         user_id=_user.id,
     )
+    if not result.get("deduped"):
+        await reserve_platform_credits_for_task_or_cancel(
+            _project,
+            _user.id,
+            task_id=result["task_id"],
+            required_credits=required_credits,
+            task_type="reference_video",
+            project_name=project_name,
+            queue=queue,
+        )
     return {"task_id": result["task_id"], "deduped": result.get("deduped", False)}

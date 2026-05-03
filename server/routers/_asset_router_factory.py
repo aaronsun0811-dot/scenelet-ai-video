@@ -25,6 +25,7 @@ from lib.i18n import Translator
 from lib.project_change_hints import project_change_source
 from lib.project_manager import ProjectManager
 from server.auth import CurrentUser
+from server.services.project_access import load_project_for_user, project_manager_for_user
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +88,8 @@ def build_asset_router(
             extras = req.model_extra or {}
 
             def _sync():
-                manager = pm_getter()
+                manager = project_manager_for_user(pm_getter(), _user.id)
+                load_project_for_user(manager, project_name, user_id=_user.id, translate=_t)
                 entry: dict[str, Any] = {"description": req.description, spec.sheet_field: ""}
                 for field in spec.extra_string_fields:
                     entry[field] = extras.get(field, "")
@@ -126,7 +128,8 @@ def build_asset_router(
         try:
 
             def _sync():
-                manager = pm_getter()
+                manager = project_manager_for_user(pm_getter(), _user.id)
+                load_project_for_user(manager, project_name, user_id=_user.id, translate=_t)
                 result: dict[str, Any] = {}
 
                 def _mutate(project):
@@ -159,7 +162,8 @@ def build_asset_router(
         try:
 
             def _sync():
-                manager = pm_getter()
+                manager = project_manager_for_user(pm_getter(), _user.id)
+                load_project_for_user(manager, project_name, user_id=_user.id, translate=_t)
 
                 def _mutate(project):
                     bucket = project.get(spec.bucket_key) or {}

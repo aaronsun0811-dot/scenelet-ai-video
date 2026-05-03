@@ -12,6 +12,7 @@ stdout 输出 JSON:
      "max_reference_images": 7,             # provider 粒度 fallback
      "source": "registry" | "custom",
      "default_duration": 4,                 # 用户项目偏好（可能 null）
+     "content_type": "short_drama",
      "content_mode": "narration",
      "generation_mode": "reference_video"}
 

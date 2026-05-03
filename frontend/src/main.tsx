@@ -12,6 +12,16 @@ import "./css/styles.css";
 import "./css/app.css";
 import "./css/studio.css";
 
+const PRELOAD_RELOAD_KEY = "arcreel:lastPreloadReloadAt";
+
+window.addEventListener("vite:preloadError", (event) => {
+  event.preventDefault();
+  const lastReloadAt = Number(sessionStorage.getItem(PRELOAD_RELOAD_KEY) ?? 0);
+  if (Date.now() - lastReloadAt < 30_000) return;
+  sessionStorage.setItem(PRELOAD_RELOAD_KEY, String(Date.now()));
+  window.location.reload();
+});
+
 // 从 localStorage 恢复登录状态
 useAuthStore.getState().initialize();
 

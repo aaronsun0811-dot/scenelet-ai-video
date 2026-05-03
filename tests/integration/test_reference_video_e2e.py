@@ -45,6 +45,7 @@ def three_bucket_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         json.dumps(
             {
                 "title": "Demo",
+                "owner_user_id": "u1",
                 "content_mode": "reference_video",
                 "generation_mode": "reference_video",
                 "style": "唐风水墨",

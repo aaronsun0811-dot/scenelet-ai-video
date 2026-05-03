@@ -1,5 +1,5 @@
 /**
- * OpenClaw 集成引导 Modal
+ * External Agent integration guide modal.
  * 提示词区域（可复制，含动态 skill.md URL）、3 步使用说明、"获取 API 令牌"按钮
  */
 import { useCallback, useMemo, useState } from "react";
@@ -8,41 +8,54 @@ import { Check, Copy, ExternalLink, X } from "lucide-react";
 import { useLocation } from "wouter";
 import { useEscapeClose } from "@/hooks/useEscapeClose";
 
-// 🦞 SVG lobster icon (inline, no external dep)
-function LobsterIcon({ className }: { className?: string }) {
-  return (
-    <span className={className} aria-hidden="true" role="img">
-      🦞
-    </span>
-  );
-}
+export type ExternalAgentKind = "openclaw" | "hermes";
 
 interface OpenClawModalProps {
+  agent?: ExternalAgentKind;
   onClose: () => void;
 }
 
-// 使用步骤数据（静态，提升到组件外避免每次渲染重建）
-const STEPS = [
-  {
-    step: "01",
-    title: "向你的 OpenClaw 发送上述提示词",
-    desc: "复制提示词，粘贴给 OpenClaw 发送",
-  },
-  {
-    step: "02",
-    title: "OpenClaw 从 Skill 文档学习能力",
-    desc: "OpenClaw 会自动读取 ArcReel Skill 文档，获取所有可用工具与 API 的使用方式",
-  },
-  {
-    step: "03",
-    title: "OpenClaw 与 ArcReel 交互并创建视频",
-    desc: "描述你的创作需求，OpenClaw 将调用 ArcReel 完成项目管理、剧本生成和视频创作",
-  },
-] as const;
+function AgentIcon({ agent, className }: { agent: ExternalAgentKind; className?: string }) {
+  if (agent === "openclaw") {
+    return (
+      <span className={className} aria-hidden="true" role="img">
+        🦞
+      </span>
+    );
+  }
+  return <img src="/hermes-agent-avatar.svg" alt="" className={`h-6 w-6 rounded-md object-cover ${className ?? ""}`} />;
+}
 
-export function OpenClawModal({ onClose }: OpenClawModalProps) {
+const AGENT_CONFIG: Record<ExternalAgentKind, { name: string; promptName: string }> = {
+  openclaw: { name: "OpenClaw", promptName: "OpenClaw" },
+  hermes: { name: "Hermes Agent", promptName: "Hermes Agent" },
+};
+
+function buildSteps(agentName: string) {
+  return [
+    {
+      step: "01",
+      title: `向你的 ${agentName} 发送上述提示词`,
+      desc: `复制提示词，粘贴给 ${agentName} 发送`,
+    },
+    {
+      step: "02",
+      title: `${agentName} 从 Skill 文档学习能力`,
+      desc: `${agentName} 会读取 Scenelet Skill 文档，获取所有可用工具与 API 的使用方式`,
+    },
+    {
+      step: "03",
+      title: `${agentName} 与 Scenelet 交互并创建视频`,
+      desc: `描述你的创作需求，${agentName} 将调用 Scenelet 完成项目管理、剧本生成和视频创作`,
+    },
+  ] as const;
+}
+
+export function OpenClawModal({ agent = "openclaw", onClose }: OpenClawModalProps) {
   const [, navigate] = useLocation();
   const [copied, setCopied] = useState(false);
+  const config = AGENT_CONFIG[agent];
+  const steps = useMemo(() => buildSteps(config.name), [config.name]);
 
   // task 7.3：动态适配当前访问地址
   const skillUrl = useMemo(
@@ -51,7 +64,7 @@ export function OpenClawModal({ onClose }: OpenClawModalProps) {
   );
 
   const systemPrompt = useMemo(
-    () => `学习 ${skillUrl} 然后遵循 skill，了解如何使用 ArcReel 创作视频`,
+    () => `学习 ${skillUrl} 然后遵循 skill，了解如何使用 Scenelet 创作视频`,
     [skillUrl],
   );
 
@@ -86,10 +99,10 @@ export function OpenClawModal({ onClose }: OpenClawModalProps) {
         {/* ——— 顶栏 ——— */}
         <div className="sticky top-0 z-10 flex items-center justify-between border-b border-gray-800 bg-gray-900 px-5 py-4">
           <div className="flex items-center gap-2.5">
-            <LobsterIcon className="text-xl leading-none" />
+            <AgentIcon agent={agent} className="text-xl leading-none" />
             <div>
-              <h2 className="text-sm font-semibold text-gray-100">OpenClaw 集成指南</h2>
-              <p className="text-xs text-gray-500">将 ArcReel 接入 OpenClaw AI Agent</p>
+              <h2 className="text-sm font-semibold text-gray-100">{config.name} 集成指南</h2>
+              <p className="text-xs text-gray-500">将 Scenelet 接入 {config.promptName}</p>
             </div>
           </div>
           <button
@@ -148,7 +161,7 @@ export function OpenClawModal({ onClose }: OpenClawModalProps) {
           <div>
             <div className="mb-3 text-xs font-medium text-gray-400">使用步骤</div>
             <div className="space-y-2">
-              {STEPS.map(({ step, title, desc }) => (
+              {steps.map(({ step, title, desc }) => (
                 <div
                   key={step}
                   className="flex gap-3 rounded-xl border border-gray-800 bg-gray-950/50 px-3.5 py-3"

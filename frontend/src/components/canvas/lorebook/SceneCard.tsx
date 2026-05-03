@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useId } from "react";
 import { useTranslation } from "react-i18next";
-import { Landmark, Upload } from "lucide-react";
+import { Landmark, MapPinned, PackageCheck, Upload } from "lucide-react";
 import { API } from "@/api";
 import { AddToLibraryButton } from "@/components/assets/AddToLibraryButton";
 import { VersionTimeMachine } from "@/components/canvas/timeline/VersionTimeMachine";
@@ -100,6 +100,14 @@ export function SceneCard({
   const sheetUrl = scene.scene_sheet
     ? API.getFileUrl(projectName, scene.scene_sheet, sheetFp)
     : null;
+  const sourceKind = scene.asset_source?.source_kind;
+  const sourceFile = scene.asset_source?.source_file ?? "";
+  const sourceLabel = sourceKind === "travel_reference"
+    ? t("scene_source_travel_reference")
+    : scene.asset_source?.kind === "asset_library"
+    ? t("scene_source_asset_library")
+    : "";
+  const SourceIcon = sourceKind === "travel_reference" ? MapPinned : PackageCheck;
 
   return (
     <div
@@ -116,7 +124,18 @@ export function SceneCard({
     >
       {/* ---- Header: name + actions ---- */}
       <div className="mb-3 flex items-center justify-between gap-2">
-        <h3 className="min-w-0 flex-1 truncate text-lg font-bold text-white">{name}</h3>
+        <div className="min-w-0 flex-1">
+          <h3 className="truncate text-lg font-bold text-white">{name}</h3>
+          {sourceLabel && (
+            <div
+              className="mt-1 inline-flex max-w-full items-center gap-1.5 rounded-full border border-cyan-400/20 bg-cyan-500/10 px-2 py-0.5 text-[11px] font-medium text-cyan-100"
+              title={sourceFile || sourceLabel}
+            >
+              <SourceIcon className="h-3 w-3 shrink-0" />
+              <span className="truncate">{sourceLabel}</span>
+            </div>
+          )}
+        </div>
         <div className="flex shrink-0 items-center gap-0.5">
           <button
             type="button"
@@ -206,6 +225,13 @@ export function SceneCard({
         loading={generating}
         label={scene.scene_sheet ? t("regenerate_design") : t("generate_design")}
         className="w-full justify-center"
+        preflight={{
+          projectName,
+          taskType: "scene",
+          resourceId: name,
+          targetLabel: name,
+          payload: { prompt: scene.description ?? "" },
+        }}
       />
     </div>
   );

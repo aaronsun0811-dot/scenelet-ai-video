@@ -27,10 +27,18 @@ def _row_to_dict(row: ApiKey) -> dict[str, Any]:
         "created_at": _to_iso(row.created_at),
         "expires_at": _to_iso(row.expires_at),
         "last_used_at": _to_iso(row.last_used_at),
+        "user_id": row.user_id,
     }
 
 
 class ApiKeyRepository(BaseRepository):
+    def __init__(self, session, user_id: str = DEFAULT_USER_ID):
+        super().__init__(session)
+        self.user_id = user_id
+
+    def _scope_query(self, stmt, model):
+        return stmt.where(model.user_id == self.user_id)
+
     async def create(
         self,
         *,
@@ -38,7 +46,7 @@ class ApiKeyRepository(BaseRepository):
         key_hash: str,
         key_prefix: str,
         expires_at: datetime | None = None,
-        user_id: str = DEFAULT_USER_ID,
+        user_id: str | None = None,
     ) -> dict[str, Any]:
         """Create a new API key record."""
         row = ApiKey(
@@ -47,7 +55,7 @@ class ApiKeyRepository(BaseRepository):
             key_prefix=key_prefix,
             created_at=utc_now(),
             expires_at=expires_at,
-            user_id=user_id,
+            user_id=user_id or self.user_id,
         )
         self.session.add(row)
         await self.session.flush()
@@ -64,7 +72,6 @@ class ApiKeyRepository(BaseRepository):
     async def get_by_hash(self, key_hash: str) -> dict[str, Any] | None:
         """Look up a key by its SHA-256 hash. Returns full row including hash."""
         stmt = select(ApiKey).where(ApiKey.key_hash == key_hash)
-        stmt = self._scope_query(stmt, ApiKey)
         result = await self.session.execute(stmt)
         row = result.scalar_one_or_none()
         if row is None:
@@ -77,6 +84,7 @@ class ApiKeyRepository(BaseRepository):
             "created_at": row.created_at,
             "expires_at": row.expires_at,
             "last_used_at": row.last_used_at,
+            "user_id": row.user_id,
         }
 
     async def get_by_id(self, key_id: int) -> dict[str, Any] | None:
@@ -93,7 +101,12 @@ class ApiKeyRepository(BaseRepository):
 
     async def delete(self, key_id: int) -> bool:
         """Delete a key by ID. Returns True if deleted, False if not found."""
-        result = await self.session.execute(sa_delete(ApiKey).where(ApiKey.id == key_id))
+        result = await self.session.execute(
+            sa_delete(ApiKey).where(
+                ApiKey.id == key_id,
+                ApiKey.user_id == self.user_id,
+            )
+        )
         return result.rowcount > 0
 
     async def touch_last_used(self, key_hash: str) -> None:

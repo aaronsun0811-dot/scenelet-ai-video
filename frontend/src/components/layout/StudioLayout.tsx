@@ -2,6 +2,7 @@ import { useLocation } from "wouter";
 import { Bot } from "lucide-react";
 import { GlobalHeader } from "./GlobalHeader";
 import { AssetSidebar } from "./AssetSidebar";
+import { AppSidebar } from "./AppSidebar";
 import { AgentCopilot } from "@/components/copilot/AgentCopilot";
 import { useTasksSSE } from "@/hooks/useTasksSSE";
 import { useProjectEventsSSE } from "@/hooks/useProjectEventsSSE";
@@ -31,7 +32,12 @@ export function StudioLayout({ children }: StudioLayoutProps) {
     <div className="flex h-screen flex-col bg-gray-950 text-gray-100">
       <GlobalHeader onNavigateBack={() => setLocation("~/app/projects")} />
       <div className="flex flex-1 overflow-hidden">
-        <AssetSidebar className="w-[15%] min-w-50 border-r border-gray-800" />
+        <AppSidebar
+          responsive={false}
+          className="hidden overflow-y-auto xl:block"
+          onNavigate={(path) => setLocation(`~${path}`)}
+        />
+        <AssetSidebar className="w-64 min-w-[16rem] border-r border-gray-800" />
         <main className="flex-1 overflow-auto">
           {children}
         </main>

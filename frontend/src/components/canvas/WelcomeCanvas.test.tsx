@@ -60,6 +60,21 @@ describe("WelcomeCanvas auto-analyze on first upload", () => {
     await waitFor(() => expect(onAnalyze).toHaveBeenCalledTimes(1));
   });
 
+  it("runs quickstart instead of plain analyze after first upload when guide is active", async () => {
+    const onUpload = vi.fn().mockResolvedValue(undefined);
+    const onAnalyze = vi.fn().mockResolvedValue(undefined);
+    const onQuickStart = vi.fn().mockResolvedValue(true);
+    renderWelcome({ onUpload, onAnalyze, onQuickStart, quickStartActive: true });
+
+    const input = await screen.findByLabelText(/upload|上传/i);
+    const file = new File(["x"], "novel.txt", { type: "text/plain" });
+    fireEvent.change(input, { target: { files: [file] } });
+
+    await waitFor(() => expect(onUpload).toHaveBeenCalledWith(file));
+    await waitFor(() => expect(onQuickStart).toHaveBeenCalledTimes(1));
+    expect(onAnalyze).not.toHaveBeenCalled();
+  });
+
   it("does NOT auto-trigger analyze when uploading from has_sources", async () => {
     vi.spyOn(API, "listFiles").mockResolvedValue({
       files: { source: [{ name: "existing.txt", size: 10, url: "/x" }] },
@@ -74,6 +89,18 @@ describe("WelcomeCanvas auto-analyze on first upload", () => {
 
     await waitFor(() => expect(onUpload).toHaveBeenCalled());
     expect(onAnalyze).not.toHaveBeenCalled();
+  });
+
+  it("shows quickstart action when existing source files are ready", async () => {
+    vi.spyOn(API, "listFiles").mockResolvedValue({
+      files: { source: [{ name: "existing.txt", size: 10, url: "/x" }] },
+    });
+    const onQuickStart = vi.fn().mockResolvedValue(true);
+    renderWelcome({ onQuickStart, quickStartActive: true });
+
+    fireEvent.click(await screen.findByRole("button", { name: /一键起步|One-click kickoff/ }));
+
+    await waitFor(() => expect(onQuickStart).toHaveBeenCalledTimes(1));
   });
 });
 

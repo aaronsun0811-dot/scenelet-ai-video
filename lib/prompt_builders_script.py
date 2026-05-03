@@ -40,6 +40,17 @@ def _format_aspect_ratio_desc(aspect_ratio: str) -> str:
     return f"{aspect_ratio} 构图"
 
 
+def _format_workflow_block(workflow_instructions: str | None) -> str:
+    """格式化内容类型工作流规则。"""
+    if not workflow_instructions or not workflow_instructions.strip():
+        return ""
+    return f"""
+<workflow>
+{workflow_instructions.strip()}
+</workflow>
+"""
+
+
 def build_narration_prompt(
     project_overview: dict,
     style: str,
@@ -51,6 +62,7 @@ def build_narration_prompt(
     supported_durations: list[int] | None = None,
     default_duration: int | None = None,
     aspect_ratio: str = "9:16",
+    workflow_instructions: str | None = None,
     target_language: str = "中文",
 ) -> str:
     """
@@ -78,6 +90,7 @@ def build_narration_prompt(
 **重要：所有输出内容必须使用{target_language}。仅 JSON 键名和枚举值使用英文。**
 
 1. 你将获得故事概述、视觉风格、角色列表、场景列表、道具列表，以及已拆分的小说片段。
+   如果提供 workflow，请优先遵循其中的内容类型目标、结构规则和视觉规则。
 
 2. 为每个片段生成：
    - image_prompt：第一帧的图像生成提示词（{target_language}描述）
@@ -95,6 +108,7 @@ def build_narration_prompt(
 风格：{style}
 描述：{style_description}
 </style>
+{_format_workflow_block(workflow_instructions)}
 
 <characters>
 {_format_character_names(characters)}
@@ -178,6 +192,7 @@ def build_drama_prompt(
     supported_durations: list[int] | None = None,
     default_duration: int | None = None,
     aspect_ratio: str = "16:9",
+    workflow_instructions: str | None = None,
     target_language: str = "中文",
 ) -> str:
     """
@@ -205,6 +220,7 @@ def build_drama_prompt(
 **重要：所有输出内容必须使用{target_language}。仅 JSON 键名和枚举值使用英文。**
 
 1. 你将获得故事概述、视觉风格、角色列表、场景列表、道具列表，以及已拆分的分镜列表。
+   如果提供 workflow，请优先遵循其中的内容类型目标、结构规则和视觉规则。
 
 2. 为每个分镜生成：
    - image_prompt：第一帧的图像生成提示词（{target_language}描述）
@@ -222,6 +238,7 @@ def build_drama_prompt(
 风格：{style}
 描述：{style_description}
 </style>
+{_format_workflow_block(workflow_instructions)}
 
 <characters>
 {_format_character_names(characters)}

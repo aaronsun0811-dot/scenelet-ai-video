@@ -7,6 +7,7 @@ import math
 from typing import Any
 
 from lib.config.resolver import ConfigResolver
+from lib.content_workflows import get_workflow_preset
 from lib.cost_calculator import cost_calculator
 from lib.grid.layout import calculate_grid_layout
 from lib.storyboard_sequence import get_storyboard_items, group_scenes_by_segment_break
@@ -58,7 +59,7 @@ class CostEstimationService:
                 video_provider, video_model = "unknown", "unknown"
 
             try:
-                generate_audio = await r.video_generate_audio(project_name)
+                generate_audio = await r.video_generate_audio_from_project(project_data)
             except Exception:
                 generate_audio = False
 
@@ -93,15 +94,24 @@ class CostEstimationService:
         # Get actual costs
         actual_by_segment = await self._tracker.get_actual_costs_by_segment(project_name)
 
-        generation_mode = project_data.get("generation_mode", "single")
+        content_type = project_data.get("content_type")
+        workflow_preset = get_workflow_preset(content_type if isinstance(content_type, str) else None)
+        generation_mode = (
+            project_data.get("generation_mode") or workflow_preset.generation_mode
+            if workflow_preset
+            else project_data.get("generation_mode", "single")
+        )
+        content_mode = workflow_preset.content_mode if workflow_preset else project_data.get("content_mode", "narration")
         # 规范化 aspect_ratio：可能是 str 或 dict，复用生成任务的解析逻辑
         raw_ar = project_data.get("aspect_ratio")
         if isinstance(raw_ar, str):
             aspect_ratio = raw_ar
         elif isinstance(raw_ar, dict):
             aspect_ratio = raw_ar.get("storyboards", "9:16")
+        elif workflow_preset is not None:
+            aspect_ratio = workflow_preset.aspect_ratio
         else:
-            aspect_ratio = "9:16" if project_data.get("content_mode", "narration") == "narration" else "16:9"
+            aspect_ratio = "9:16" if content_mode == "narration" else "16:9"
 
         # 预计算图片单价
         image_unit_cost: tuple[float, str] | None = None

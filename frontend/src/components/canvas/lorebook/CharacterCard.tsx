@@ -347,6 +347,13 @@ export function CharacterCard({
           loading={generating}
           label={character.character_sheet ? t("regenerate_design") : t("generate_design")}
           className="w-full justify-center"
+          preflight={{
+            projectName,
+            taskType: "character",
+            resourceId: name,
+            targetLabel: name,
+            payload: { prompt: character.description ?? "" },
+          }}
         />
       </div>
     </div>

@@ -16,6 +16,7 @@ const FAKE_CONFIG = {
     text_backend_script: "",
     text_backend_overview: "",
     text_backend_style: "",
+    google_maps_api_key: { is_set: false, masked: null },
   },
 };
 
@@ -32,16 +33,20 @@ const FAKE_CONFIG_WITH_DEFAULTS = {
     text_backend_script: "gemini/g25",
     text_backend_overview: "gemini/g25",
     text_backend_style: "gemini/g25",
+    google_maps_api_key: { is_set: false, masked: null },
   },
 };
 
 function renderAt(path: string) {
   const location = memoryLocation({ path, record: true });
-  return render(
-    <Router hook={location.hook}>
-      <Route path="/app/projects/:projectName/settings" component={ProjectSettingsPage} />
-    </Router>,
-  );
+  return {
+    ...render(
+      <Router hook={location.hook}>
+        <Route path="/app/projects/:projectName/settings" component={ProjectSettingsPage} />
+      </Router>,
+    ),
+    location,
+  };
 }
 
 describe("ProjectSettingsPage – style picker", () => {
@@ -49,8 +54,38 @@ describe("ProjectSettingsPage – style picker", () => {
     useAppStore.setState(useAppStore.getInitialState(), true);
     vi.restoreAllMocks();
     vi.spyOn(API, "getSystemConfig").mockResolvedValue(FAKE_CONFIG as unknown as Awaited<ReturnType<typeof API.getSystemConfig>>);
+    vi.spyOn(API, "getProjectMembers").mockResolvedValue({
+      owner_user_id: "default",
+      current_user_role: "owner",
+      members: [],
+    });
+    vi.spyOn(API, "searchUsers").mockResolvedValue([]);
     vi.spyOn(providerModels, "getProviderModels").mockResolvedValue([]);
     vi.spyOn(providerModels, "getCustomProviderModels").mockResolvedValue([]);
+  });
+
+  it("shows the shared app sidebar inside project settings", async () => {
+    vi.spyOn(API, "getProject").mockResolvedValue({
+      project: {
+        title: "Demo",
+        episodes: [],
+        characters: {},
+        scenes: {},
+        props: {},
+      },
+      scripts: {},
+    } as unknown as Awaited<ReturnType<typeof API.getProject>>);
+
+    renderAt("/app/projects/demo/settings");
+
+    expect(await screen.findByText("模型配置")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "侧边栏创作项目" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "侧边栏资产库" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "侧边栏导入 ZIP" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "侧边栏创建项目" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "侧边栏智能体设置" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "侧边栏地图与旅游设置" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "侧边栏语言" })).toBeInTheDocument();
   });
 
   it("loads a project with style_template_id and selects the matching template card by default", async () => {
@@ -271,12 +306,585 @@ describe("ProjectSettingsPage – style picker", () => {
     const saveBtn = screen.getByRole("button", { name: /^(保存|Save)$/i });
     expect(saveBtn).not.toBeDisabled();
   });
+
+  it("changing content type applies its aspect ratio and generation preset on save", async () => {
+    vi.spyOn(API, "getProject").mockResolvedValue({
+      project: {
+        title: "Demo",
+        content_type: "scene_sketch",
+        content_mode: "drama",
+        aspect_ratio: "16:9",
+        generation_mode: "storyboard",
+        episodes: [],
+        characters: {},
+        clues: {},
+      },
+      scripts: {},
+    } as unknown as Awaited<ReturnType<typeof API.getProject>>);
+    const updateSpy = vi.spyOn(API, "updateProject").mockResolvedValue({
+      success: true,
+      project: { title: "Demo", content_type: "ad_story" } as unknown as Awaited<ReturnType<typeof API.updateProject>>["project"],
+    });
+
+    renderAt("/app/projects/demo/settings");
+
+    const adStoryRadio = await screen.findByRole("radio", { name: /广告剧情|Ad Story/ });
+    fireEvent.click(adStoryRadio);
+    expect(adStoryRadio).toBeChecked();
+    expect(screen.getByRole("radio", { name: /竖屏 9:16|Portrait 9:16/ })).toBeChecked();
+    expect(screen.getByRole("radio", { name: /参考生视频|Reference-to-Video/i })).toBeChecked();
+
+    fireEvent.click(screen.getByRole("button", { name: /^(保存|Save)$/i }));
+
+    await waitFor(() => {
+      expect(updateSpy).toHaveBeenCalledWith(
+        "demo",
+        expect.objectContaining({
+          content_type: "ad_story",
+          aspect_ratio: "9:16",
+          generation_mode: "reference_video",
+        }),
+      );
+    });
+  });
+
+  it("saves travel video route settings and keeps portrait selectable", async () => {
+    vi.spyOn(API, "getProject").mockResolvedValue({
+      project: {
+        title: "Demo",
+        content_type: "travel_video",
+        content_mode: "narration",
+        aspect_ratio: "16:9",
+        generation_mode: "reference_video",
+        travel_video_settings: {
+          origin: "难波站",
+          destination: "黑门市场",
+          route_source: "google_street_view",
+          narration_language: "zh",
+          target_duration: "45s",
+          camera_style: "street_walk_turns",
+          narrator_persona: "enthusiastic_guide",
+          route_notes: "",
+          character_notes: "",
+        },
+        episodes: [],
+        characters: {},
+        clues: {},
+      },
+      scripts: {},
+    } as unknown as Awaited<ReturnType<typeof API.getProject>>);
+    const updateSpy = vi.spyOn(API, "updateProject").mockResolvedValue({
+      success: true,
+      project: { title: "Demo", content_type: "travel_video" } as unknown as Awaited<ReturnType<typeof API.updateProject>>["project"],
+    });
+
+    renderAt("/app/projects/demo/settings");
+
+    fireEvent.change(await screen.findByPlaceholderText(/大阪难波站|Namba Station/), { target: { value: "大阪难波站" } });
+    fireEvent.change(screen.getByPlaceholderText(/黑门市场|Kuromon Market/), { target: { value: "道顿堀" } });
+    fireEvent.change(screen.getByDisplayValue(/Google 街景\/地图|Google Street View/), { target: { value: "manual" } });
+    fireEvent.change(screen.getByRole("combobox", { name: /目标时长|Target Duration/ }), {
+      target: { value: "custom" },
+    });
+    fireEvent.change(await screen.findByPlaceholderText(/240/), {
+      target: { value: "240" },
+    });
+    fireEvent.change(screen.getByPlaceholderText(/途经点|waypoints/), {
+      target: { value: "从车站出口出发，经过商店街后右转。" },
+    });
+    fireEvent.click(screen.getByRole("radio", { name: /竖屏 9:16|Portrait 9:16/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^(保存|Save)$/i }));
+
+    await waitFor(() => {
+      expect(updateSpy).toHaveBeenCalledWith(
+        "demo",
+        expect.objectContaining({
+          content_type: "travel_video",
+          aspect_ratio: "9:16",
+          generation_mode: "reference_video",
+          travel_video_settings: expect.objectContaining({
+            origin: "大阪难波站",
+            destination: "道顿堀",
+            route_source: "manual",
+            route_notes: "从车站出口出发，经过商店街后右转。",
+            target_duration: "custom",
+            custom_duration_seconds: 240,
+          }),
+        }),
+      );
+    });
+  });
+
+  it("uploads multiple travel route reference images and saves them", async () => {
+    vi.spyOn(API, "getProject").mockResolvedValue({
+      project: {
+        title: "Demo",
+        content_type: "travel_video",
+        content_mode: "narration",
+        aspect_ratio: "16:9",
+        generation_mode: "reference_video",
+        travel_video_settings: {
+          route_source: "reference_images",
+          narration_language: "zh",
+          target_duration: "45s",
+          camera_style: "street_walk_turns",
+          narrator_persona: "enthusiastic_guide",
+          route_notes: "",
+          character_notes: "",
+          reference_images: [],
+        },
+        episodes: [],
+        characters: {},
+        clues: {},
+      },
+      scripts: {},
+    } as unknown as Awaited<ReturnType<typeof API.getProject>>);
+    const uploadSpy = vi.spyOn(API, "uploadFile")
+      .mockResolvedValueOnce({
+        success: true,
+        path: "travel_references/a.png",
+        url: "/api/v1/files/demo/travel_references/a.png",
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        path: "travel_references/b.webp",
+        url: "/api/v1/files/demo/travel_references/b.webp",
+      });
+    const updateSpy = vi.spyOn(API, "updateProject").mockResolvedValue({
+      success: true,
+      project: { title: "Demo", content_type: "travel_video" } as unknown as Awaited<ReturnType<typeof API.updateProject>>["project"],
+    });
+
+    renderAt("/app/projects/demo/settings");
+
+    const input = await screen.findByLabelText(/上传参考图|Upload Reference Images/);
+    fireEvent.change(input, {
+      target: {
+        files: [
+          new File(["a"], "a.png", { type: "image/png" }),
+          new File(["b"], "b.webp", { type: "image/webp" }),
+        ],
+      },
+    });
+
+    await waitFor(() => {
+      expect(uploadSpy).toHaveBeenCalledTimes(2);
+    });
+    expect(await screen.findAllByAltText(/旅游路线参考图|Travel route reference image/)).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole("button", { name: /^(保存|Save)$/i }));
+
+    await waitFor(() => {
+      expect(updateSpy).toHaveBeenCalledWith(
+        "demo",
+        expect.objectContaining({
+          travel_video_settings: expect.objectContaining({
+            route_source: "reference_images",
+            reference_images: ["travel_references/a.png", "travel_references/b.webp"],
+          }),
+        }),
+      );
+    });
+  });
+
+  it("caps travel route reference uploads at ten images", async () => {
+    const existingRefs = Array.from({ length: 9 }, (_, index) => `travel_references/ref-${index + 1}.png`);
+    vi.spyOn(API, "getProject").mockResolvedValue({
+      project: {
+        title: "Demo",
+        content_type: "travel_video",
+        content_mode: "narration",
+        aspect_ratio: "16:9",
+        generation_mode: "reference_video",
+        travel_video_settings: {
+          route_source: "reference_images",
+          reference_images: existingRefs,
+        },
+        episodes: [],
+        characters: {},
+        clues: {},
+      },
+      scripts: {},
+    } as unknown as Awaited<ReturnType<typeof API.getProject>>);
+    const uploadSpy = vi.spyOn(API, "uploadFile").mockResolvedValue({
+      success: true,
+      path: "travel_references/ref-10.png",
+      url: "/api/v1/files/demo/travel_references/ref-10.png",
+    });
+
+    renderAt("/app/projects/demo/settings");
+
+    const input = await screen.findByLabelText(/上传参考图|Upload Reference Images/);
+    fireEvent.change(input, {
+      target: {
+        files: [
+          new File(["a"], "a.png", { type: "image/png" }),
+          new File(["b"], "b.webp", { type: "image/webp" }),
+        ],
+      },
+    });
+
+    await waitFor(() => {
+      expect(uploadSpy).toHaveBeenCalledTimes(1);
+    });
+    expect(await screen.findByText(/已上传 10\/10|10\/10 uploaded/)).toBeInTheDocument();
+  });
+
+  it("previews and displays travel route nodes", async () => {
+    vi.spyOn(API, "getSystemConfig").mockResolvedValue({
+      ...FAKE_CONFIG,
+      settings: {
+        ...FAKE_CONFIG.settings,
+        google_maps_api_key: { is_set: true, masked: "AIza***demo" },
+      },
+    } as unknown as Awaited<ReturnType<typeof API.getSystemConfig>>);
+    vi.spyOn(API, "getProject").mockResolvedValue({
+      project: {
+        title: "Demo",
+        content_type: "travel_video",
+        content_mode: "narration",
+        aspect_ratio: "16:9",
+        generation_mode: "reference_video",
+        travel_video_settings: {
+          origin: "大阪难波站",
+          destination: "黑门市场",
+          route_source: "google_street_view",
+          narration_language: "zh",
+          target_duration: "45s",
+          camera_style: "street_walk_turns",
+          narrator_persona: "enthusiastic_guide",
+        },
+        episodes: [],
+        characters: {},
+        clues: {},
+      },
+      scripts: {},
+    } as unknown as Awaited<ReturnType<typeof API.getProject>>);
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: vi.fn(() => "blob:street-view"),
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: vi.fn(),
+    });
+    const streetViewSpy = vi.spyOn(API, "fetchTravelRouteStreetView").mockResolvedValue(
+      new Blob(["jpeg"], { type: "image/jpeg" }),
+    );
+    const previewSpy = vi.spyOn(API, "previewTravelRoute").mockResolvedValue({
+      source: "google",
+      google_configured: true,
+      route_ready: true,
+      origin: "大阪难波站",
+      destination: "黑门市场",
+      summary: "Sennichimae Dori",
+      distance_text: "1.2 km",
+      duration_text: "15 mins",
+      reference_images: [],
+      warnings: [],
+      generated_at: "2026-05-02T00:00:00Z",
+      nodes: [
+        {
+          id: "google-step-1",
+          label: "路线节点 1",
+          instruction: "Head east",
+          lat: 34.665,
+          lng: 135.501,
+          street_view_status: "OK",
+          pano_id: "pano-demo",
+          source: "google",
+        },
+      ],
+    });
+
+    renderAt("/app/projects/demo/settings");
+
+    fireEvent.click(await screen.findByRole("button", { name: /预检路线|Precheck Route/ }));
+
+    await waitFor(() => {
+      expect(previewSpy).toHaveBeenCalledWith(
+        "demo",
+        expect.objectContaining({
+          origin: "大阪难波站",
+          destination: "黑门市场",
+          route_source: "google_street_view",
+        }),
+      );
+    });
+    expect(await screen.findByText(/Sennichimae Dori/)).toBeInTheDocument();
+    expect(screen.getByText("Head east")).toBeInTheDocument();
+    expect(screen.getByText("OK")).toBeInTheDocument();
+    expect(streetViewSpy).toHaveBeenCalledWith("demo", "google-step-1");
+    expect(await screen.findByAltText(/街景缩略图|Street View thumbnail/)).toHaveAttribute("src", "blob:street-view");
+  });
+
+  it("renders reference-image route preview nodes as thumbnails", async () => {
+    vi.spyOn(API, "getProject").mockResolvedValue({
+      project: {
+        title: "Demo",
+        content_type: "travel_video",
+        content_mode: "narration",
+        aspect_ratio: "16:9",
+        generation_mode: "reference_video",
+        travel_video_settings: {
+          route_source: "reference_images",
+          reference_images: ["travel_references/map.png"],
+          route_preview: {
+            source: "reference_images",
+            google_configured: false,
+            route_ready: true,
+            summary: "使用上传的路线参考图生成。",
+            reference_images: ["travel_references/map.png"],
+            warnings: [],
+            nodes: [
+              {
+                id: "reference-1",
+                label: "参考图 1",
+                instruction: "travel_references/map.png",
+                source: "reference_image",
+              },
+            ],
+          },
+        },
+        episodes: [],
+        characters: {},
+        clues: {},
+      },
+      scripts: {},
+    } as unknown as Awaited<ReturnType<typeof API.getProject>>);
+
+    renderAt("/app/projects/demo/settings");
+
+    const images = await screen.findAllByAltText(/旅游路线参考图|Travel route reference image/);
+    expect(images.some((img) => img.getAttribute("src")?.includes("/api/v1/files/demo/travel_references/map.png"))).toBe(true);
+  });
+
+  it("saves the project-level character design style prompt", async () => {
+    vi.spyOn(API, "getProject").mockResolvedValue({
+      project: {
+        title: "Demo",
+        character_style_prompt: "旧人物风格",
+        episodes: [],
+        characters: {},
+        clues: {},
+      },
+      scripts: {},
+    } as unknown as Awaited<ReturnType<typeof API.getProject>>);
+    const updateSpy = vi.spyOn(API, "updateProject").mockResolvedValue({
+      success: true,
+      project: { title: "Demo", character_style_prompt: "真人短剧质感" } as unknown as Awaited<ReturnType<typeof API.updateProject>>["project"],
+    });
+
+    renderAt("/app/projects/demo/settings");
+
+    const textarea = await screen.findByLabelText(/角色设定图风格|Character Design Style/);
+    fireEvent.change(textarea, { target: { value: " 真人短剧质感 " } });
+    fireEvent.click(screen.getByRole("button", { name: /^(保存|Save)$/i }));
+
+    await waitFor(() => {
+      expect(updateSpy).toHaveBeenCalledWith(
+        "demo",
+        expect.objectContaining({ character_style_prompt: "真人短剧质感" }),
+      );
+    });
+  });
+
+  it("treats legacy implicit drama duration as auto", async () => {
+    vi.spyOn(API, "getProject").mockResolvedValue({
+      project: {
+        title: "Demo",
+        content_mode: "drama",
+        default_duration: 8,
+        episodes: [],
+        characters: {},
+        clues: {},
+      },
+      scripts: {},
+    } as unknown as Awaited<ReturnType<typeof API.getProject>>);
+    const updateSpy = vi.spyOn(API, "updateProject").mockResolvedValue({
+      success: true,
+      project: { title: "Demo" } as unknown as Awaited<ReturnType<typeof API.updateProject>>["project"],
+    });
+
+    renderAt("/app/projects/demo/settings");
+
+    const autoRadio = await screen.findByRole("radio", { name: "auto" });
+    expect(autoRadio).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("radio", { name: "8s" })).toHaveAttribute("aria-checked", "false");
+
+    fireEvent.click(screen.getByRole("button", { name: /^(保存|Save)$/i }));
+
+    await waitFor(() => {
+      expect(updateSpy).toHaveBeenCalledWith(
+        "demo",
+        expect.objectContaining({ default_duration: null }),
+      );
+    });
+  });
+
+  it("preserves an explicit drama duration selection", async () => {
+    vi.spyOn(API, "getProject").mockResolvedValue({
+      project: {
+        title: "Demo",
+        content_mode: "drama",
+        default_duration: 8,
+        default_duration_explicit: true,
+        episodes: [],
+        characters: {},
+        clues: {},
+      },
+      scripts: {},
+    } as unknown as Awaited<ReturnType<typeof API.getProject>>);
+
+    renderAt("/app/projects/demo/settings");
+
+    expect(await screen.findByRole("radio", { name: "8s" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("radio", { name: "auto" })).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("defaults missing billing mode to BYOK and saves platform credits changes", async () => {
+    vi.spyOn(API, "getCreditBalance").mockResolvedValue({ balance: 0, minimum_generation_balance: 1, pending_purchase_credits: 0, entries: [] });
+    vi.spyOn(API, "getProject").mockResolvedValue({
+      project: {
+        title: "Demo",
+        episodes: [],
+        characters: {},
+        clues: {},
+      },
+      scripts: {},
+    } as unknown as Awaited<ReturnType<typeof API.getProject>>);
+    const updateSpy = vi.spyOn(API, "updateProject").mockResolvedValue({
+      success: true,
+      project: { title: "Demo", billing_mode: "platform_credits" } as unknown as Awaited<ReturnType<typeof API.updateProject>>["project"],
+    });
+
+    renderAt("/app/projects/demo/settings");
+
+    const byokRadio = await screen.findByRole("radio", { name: /自己填 API/ });
+    const platformRadio = screen.getByRole("radio", { name: /平台积分/ });
+    expect(byokRadio).toBeChecked();
+    expect(platformRadio).not.toBeChecked();
+
+    fireEvent.click(platformRadio);
+    expect(platformRadio).toBeChecked();
+
+    fireEvent.click(screen.getByRole("button", { name: /^(保存|Save)$/i }));
+
+    await waitFor(() => {
+      expect(updateSpy).toHaveBeenCalledWith(
+        "demo",
+        expect.objectContaining({ billing_mode: "platform_credits" }),
+      );
+    });
+  });
+
+  it("shows balance and buy credits action for platform-credit projects", async () => {
+    vi.spyOn(API, "getCreditBalance").mockResolvedValue({
+      balance: 1500,
+      available_balance: 1433,
+      minimum_generation_balance: 1,
+      pending_purchase_credits: 600,
+      reserved_generation_credits: 67,
+      entries: [],
+    });
+    vi.spyOn(API, "getProject").mockResolvedValue({
+      project: {
+        title: "Demo",
+        billing_mode: "platform_credits",
+        episodes: [],
+        characters: {},
+        clues: {},
+      },
+      scripts: {},
+    } as unknown as Awaited<ReturnType<typeof API.getProject>>);
+
+    const { location } = renderAt("/app/projects/demo/settings");
+
+    expect(await screen.findByRole("radio", { name: /平台积分/ })).toBeChecked();
+    expect(await screen.findByText("积分余额：1,433")).toBeInTheDocument();
+    expect(screen.getByText("生成门槛：1 积分")).toBeInTheDocument();
+    expect(screen.getByText("待到账：600 积分")).toBeInTheDocument();
+    expect(screen.getByText("生成冻结：67 积分")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /购买积分/ }));
+
+    expect(location.history?.at(-1)).toBe("/app/projects?buyCredits=1");
+  });
+
+  it("shows low-balance guidance for platform-credit projects", async () => {
+    vi.spyOn(API, "getCreditBalance").mockResolvedValue({ balance: 0, minimum_generation_balance: 10, pending_purchase_credits: 0, entries: [] });
+    vi.spyOn(API, "getProject").mockResolvedValue({
+      project: {
+        title: "Demo",
+        billing_mode: "platform_credits",
+        episodes: [],
+        characters: {},
+        clues: {},
+      },
+      scripts: {},
+    } as unknown as Awaited<ReturnType<typeof API.getProject>>);
+
+    renderAt("/app/projects/demo/settings");
+
+    expect(await screen.findByRole("radio", { name: /平台积分/ })).toBeChecked();
+    expect(await screen.findByText("积分余额：0")).toBeInTheDocument();
+    expect(screen.getByText("积分余额不足，生成至少需要 10 积分")).toBeInTheDocument();
+  });
+
+  it("lets the owner add and remove project members", async () => {
+    vi.spyOn(API, "getProject").mockResolvedValue({
+      project: {
+        title: "Demo",
+        episodes: [],
+        characters: {},
+        clues: {},
+      },
+      scripts: {},
+    } as unknown as Awaited<ReturnType<typeof API.getProject>>);
+    vi.spyOn(API, "getProjectMembers").mockResolvedValue({
+      owner_user_id: "default",
+      current_user_role: "owner",
+      members: [],
+    });
+    const addSpy = vi.spyOn(API, "addProjectMember").mockResolvedValue({
+      owner_user_id: "default",
+      current_user_role: "owner",
+      members: [{ user_id: "user-c", username: "carol", role: "editor" }],
+    });
+    const removeSpy = vi.spyOn(API, "deleteProjectMember").mockResolvedValue({
+      owner_user_id: "default",
+      current_user_role: "owner",
+      members: [],
+    });
+
+    renderAt("/app/projects/demo/settings");
+
+    expect(await screen.findByText("项目成员")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("用户名或用户 ID"), { target: { value: "carol" } });
+    fireEvent.click(screen.getByRole("button", { name: "添加成员" }));
+
+    await waitFor(() => {
+      expect(addSpy).toHaveBeenCalledWith("demo", "carol", "editor");
+    });
+    expect(await screen.findByText("carol")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "移除成员 user-c" }));
+    await waitFor(() => {
+      expect(removeSpy).toHaveBeenCalledWith("demo", "user-c");
+    });
+  });
 });
 
 describe("ProjectSettingsPage – model_settings resolution", () => {
   beforeEach(() => {
     useAppStore.setState(useAppStore.getInitialState(), true);
     vi.restoreAllMocks();
+    vi.spyOn(API, "getProjectMembers").mockResolvedValue({
+      owner_user_id: "default",
+      current_user_role: "owner",
+      members: [],
+    });
+    vi.spyOn(API, "searchUsers").mockResolvedValue([]);
     vi.spyOn(providerModels, "getProviderModels").mockResolvedValue([]);
     vi.spyOn(providerModels, "getCustomProviderModels").mockResolvedValue([]);
   });

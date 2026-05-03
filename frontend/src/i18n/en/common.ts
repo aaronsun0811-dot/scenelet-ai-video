@@ -3,6 +3,7 @@ export default {
   'language': 'Language',
   'chinese': 'Chinese',
   'english': 'English',
+  'japanese': 'Japanese',
   'settings': 'Settings',
   'logout': 'Logout',
   'cancel': 'Cancel',

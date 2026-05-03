@@ -45,6 +45,21 @@ class TestPromptBuildersScript:
         assert "5, 10" in prompt
         assert "根据内容节奏自行决定" in prompt
 
+    def test_build_narration_prompt_includes_workflow_context(self):
+        prompt = build_narration_prompt(
+            project_overview={"synopsis": "故事", "genre": "悬疑", "theme": "真相", "world_setting": "古代"},
+            style="古风",
+            style_description="cinematic",
+            characters={"姜月茴": {}},
+            scenes={},
+            props={},
+            segments_md="E1S01 | 文本",
+            workflow_instructions="内容类型：口播故事\n执行规则：\n- 旁白驱动",
+        )
+        assert "<workflow>" in prompt
+        assert "内容类型：口播故事" in prompt
+        assert "优先遵循其中的内容类型目标" in prompt
+
     def test_build_drama_prompt_uses_dynamic_aspect_ratio(self):
         prompt = build_drama_prompt(
             project_overview={"synopsis": "动作", "genre": "动作", "theme": "成长", "world_setting": "近未来"},
@@ -76,3 +91,18 @@ class TestPromptBuildersScript:
             aspect_ratio="16:9",
         )
         assert "横屏构图" in prompt
+
+    def test_build_drama_prompt_includes_workflow_context(self):
+        prompt = build_drama_prompt(
+            project_overview={"synopsis": "动作", "genre": "动作", "theme": "成长", "world_setting": "近未来"},
+            style="赛博",
+            style_description="high contrast",
+            characters={"林": {}},
+            scenes={"天台": {}},
+            props={},
+            scenes_md="E1S01 | 追逐",
+            workflow_instructions="内容类型：短剧\n执行规则：\n- 前 1-2 个分镜必须给出明确钩子",
+        )
+        assert "<workflow>" in prompt
+        assert "内容类型：短剧" in prompt
+        assert "明确钩子" in prompt

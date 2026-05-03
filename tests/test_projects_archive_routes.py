@@ -171,6 +171,29 @@ class TestProjectArchiveRoutes:
         assert "download_token" in data
         assert data["expires_in"] == 300
         assert "diagnostics" in data
+        assert data["delivery_report"]["status"] == "ready_with_warnings"
+        assert data["delivery_report"]["totals"]["videos_ready"] == 1
+        assert data["delivery_report"]["totals"]["warnings"] == 1
+
+    def test_export_preflight_endpoint_does_not_issue_download_token(self, tmp_path, monkeypatch):
+        pm = ProjectManager(tmp_path / "projects")
+        _create_demo_project(pm)
+        client = _client(monkeypatch, pm)
+
+        with patch.dict(os.environ, {"AUTH_TOKEN_SECRET": "test-secret-key-that-is-at-least-32-bytes"}):
+            jwt_token = create_token("admin")
+            with client:
+                response = client.post(
+                    "/api/v1/projects/demo/export/preflight?scope=current",
+                    headers={"Authorization": f"Bearer {jwt_token}"},
+                )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "download_token" not in data
+        assert data["diagnostics"]["blocking"] == []
+        assert data["delivery_report"]["status"] == "ready_with_warnings"
+        assert data["delivery_report"]["totals"]["warnings"] == 1
 
     def test_export_token_endpoint_project_not_found(self, tmp_path, monkeypatch):
         pm = ProjectManager(tmp_path / "projects")

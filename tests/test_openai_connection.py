@@ -44,8 +44,8 @@ class TestTestOpenAI:
         assert "text-embedding-ada-002" not in result.available_models
         assert "whisper-1" not in result.available_models
 
-    def test_empty_relevant_models(self):
-        """所有模型都不匹配关键词时，返回空列表但仍成功。"""
+    def test_empty_relevant_models_falls_back_to_registry(self):
+        """所有模型都不匹配关键词时，回退展示 registry 默认模型。"""
         mock_models = MagicMock()
         mock_models.data = [
             _make_model("text-embedding-3-large"),
@@ -59,7 +59,8 @@ class TestTestOpenAI:
             result = _test_openai({"api_key": "sk-test"}, _t)
 
         assert result.success is True
-        assert result.available_models == []
+        assert "gpt-5.4" in result.available_models
+        assert "sora-2" in result.available_models
 
     def test_models_sorted(self):
         """返回的模型列表应按字母序排列。"""

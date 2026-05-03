@@ -59,6 +59,7 @@ class DataValidator:
         "scenes",
         "props",
         "reference_videos",
+        "travel_references",
         "storyboards",
         "videos",
         "thumbnails",

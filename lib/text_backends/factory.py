@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from lib.config.resolver import ConfigResolver
+from lib.config.resolver import ConfigResolver, get_project_manager
 from lib.custom_provider import is_custom_provider, parse_provider_id
 from lib.db import async_session_factory
+from lib.db.base import DEFAULT_USER_ID, PLATFORM_USER_ID
+from lib.provider_base_urls import resolve_provider_base_url
 from lib.providers import PROVIDER_OPENAI
 from lib.text_backends.base import TextBackend, TextTaskType
 from lib.text_backends.registry import create_backend
@@ -15,18 +17,46 @@ PROVIDER_ID_TO_BACKEND: dict[str, str] = {
     "ark": "ark",
     "grok": "grok",
     "openai": "openai",
+    "baidu": "openai",
+    "qwen": "openai",
+    "zhipu": "openai",
+    "deepseek": "openai",
+    "moonshot": "openai",
+    "minimax": "openai",
+    "hunyuan": "openai",
+    "anthropic": "openai",
 }
+
+
+def _load_project_and_credential_user_id(project_name: str | None, user_id: str) -> tuple[dict | None, str]:
+    if not project_name:
+        return None, user_id
+    try:
+        manager = get_project_manager()
+        if hasattr(manager, "for_user"):
+            manager = manager.for_user(user_id)
+        project = manager.load_project(project_name)
+    except Exception:
+        return None, user_id
+    credential_user_id = PLATFORM_USER_ID if project.get("billing_mode") == "platform_credits" else user_id
+    return project, credential_user_id
 
 
 async def create_text_backend_for_task(
     task_type: TextTaskType,
     project_name: str | None = None,
+    *,
+    user_id: str = DEFAULT_USER_ID,
 ) -> TextBackend:
     """从 DB 配置创建文本 backend。"""
-    resolver = ConfigResolver(async_session_factory)
+    project, credential_user_id = _load_project_and_credential_user_id(project_name, user_id)
+    resolver = ConfigResolver(async_session_factory, user_id=credential_user_id)
 
     async with resolver.session() as r:
-        provider_id, model_id = await r.text_backend_for_task(task_type, project_name)
+        if project is not None:
+            provider_id, model_id = await r.text_backend_for_task_from_project(task_type, project)
+        else:
+            provider_id, model_id = await r.text_backend_for_task(task_type, project_name)
 
         # Custom providers use a separate factory path
         if is_custom_provider(provider_id):
@@ -38,7 +68,7 @@ async def create_text_backend_for_task(
             from lib.db.repositories.custom_provider_repo import CustomProviderRepository
 
             async with r._open_session() as (session, _):
-                repo = CustomProviderRepository(session)
+                repo = CustomProviderRepository(session, user_id=r.user_id)
                 db_id = parse_provider_id(provider_id)
                 provider = await repo.get_provider(db_id)
                 if provider is None:
@@ -76,7 +106,9 @@ async def create_text_backend_for_task(
         kwargs["gcs_bucket"] = provider_config.get("gcs_bucket")
     else:
         kwargs["api_key"] = provider_config.get("api_key")
-        if provider_id in ("gemini-aistudio", PROVIDER_OPENAI):
+        if provider_id == "gemini-aistudio":
             kwargs["base_url"] = provider_config.get("base_url")
+        elif backend_name == PROVIDER_OPENAI:
+            kwargs["base_url"] = resolve_provider_base_url(provider_id, provider_config.get("base_url"))
 
     return create_backend(backend_name, **kwargs)

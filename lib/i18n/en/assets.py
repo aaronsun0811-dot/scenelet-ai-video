@@ -9,4 +9,6 @@ MESSAGES = {
     "asset_load_project_failed": "failed to load target project",
     "asset_invalid_conflict_policy": "conflict_policy must be skip / overwrite / rename",
     "asset_invalid_name": "Asset name '{name}' contains illegal characters (path separators or ..)",
+    "asset_invalid_project_file": "Project file path '{path}' is invalid",
+    "asset_project_file_not_found": "Project '{project}' does not contain file '{path}'",
 }

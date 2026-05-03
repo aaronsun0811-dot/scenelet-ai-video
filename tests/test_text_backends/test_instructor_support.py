@@ -47,9 +47,8 @@ class TestGenerateStructuredViaInstructor:
 
     def test_passes_mode_and_retries(self):
         """正确传递 mode 和 max_retries 参数。"""
-        from instructor import Mode
-
         mock_client = MagicMock()
+        mode = object()
         sample = SampleModel(name="Bob", age=25)
         mock_completion = SimpleNamespace(
             usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5),
@@ -68,12 +67,12 @@ class TestGenerateStructuredViaInstructor:
                 model="test-model",
                 messages=[{"role": "user", "content": "test"}],
                 response_model=SampleModel,
-                mode=Mode.MD_JSON,
+                mode=mode,
                 max_retries=3,
             )
 
             # 验证 from_openai 使用了正确的 mode
-            mock_instructor.from_openai.assert_called_once_with(mock_client, mode=Mode.MD_JSON)
+            mock_instructor.from_openai.assert_called_once_with(mock_client, mode=mode)
             # 验证 create_with_completion 使用了正确的参数
             mock_patched.chat.completions.create_with_completion.assert_called_once_with(
                 model="test-model",

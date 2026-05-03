@@ -396,6 +396,7 @@ class TestVideoCapabilities:
                     mock_pm.return_value.load_project.return_value = {
                         "video_backend": "grok/grok-imagine-video",
                         "default_duration": 6,
+                        "content_type": "ad_story",
                         "content_mode": "narration",
                         "generation_mode": "reference_video",
                     }
@@ -403,8 +404,28 @@ class TestVideoCapabilities:
         finally:
             await engine.dispose()
         assert caps["default_duration"] == 6
-        assert caps["content_mode"] == "narration"
+        assert caps["content_type"] == "ad_story"
+        assert caps["content_mode"] == "drama"
         assert caps["generation_mode"] == "reference_video"
+
+    async def test_content_type_preset_backfills_missing_modes(self):
+        resolver = ConfigResolver.__new__(ConfigResolver)
+        fake_svc = _FakeConfigService(settings={})
+        factory, engine = await _make_session()
+        try:
+            async with factory() as session:
+                with patch("lib.config.resolver.get_project_manager") as mock_pm:
+                    mock_pm.return_value.load_project.return_value = {
+                        "video_backend": "grok/grok-imagine-video",
+                        "content_type": "ad_story",
+                    }
+                    caps = await resolver._resolve_video_capabilities(fake_svc, session, "demo")
+        finally:
+            await engine.dispose()
+        assert caps["content_type"] == "ad_story"
+        assert caps["content_mode"] == "drama"
+        assert caps["generation_mode"] == "reference_video"
+        assert caps["default_duration"] == 8
 
     async def test_missing_default_duration_is_null(self):
         resolver = ConfigResolver.__new__(ConfigResolver)
@@ -464,6 +485,7 @@ class TestVideoCapabilities:
                     {
                         "video_backend": "grok/grok-imagine-video",
                         "default_duration": 9,
+                        "content_type": "short_drama",
                     }
                 )
                 # 关键断言：load_project 一次都不能被调到
@@ -473,6 +495,9 @@ class TestVideoCapabilities:
         assert caps["provider_id"] == "grok"
         assert caps["max_duration"] == 15
         assert caps["default_duration"] == 9
+        assert caps["content_type"] == "short_drama"
+        assert caps["content_mode"] == "drama"
+        assert caps["generation_mode"] == "storyboard"
         assert caps["max_reference_images"] == 7
 
     async def test_max_reference_images_falls_back_to_default_for_unlisted_provider(self):

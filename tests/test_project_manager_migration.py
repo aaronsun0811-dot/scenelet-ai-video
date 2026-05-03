@@ -123,14 +123,20 @@ def test_migration_emits_change_hint(pm: ProjectManager):
     from lib.project_change_hints import register_project_change_listener
 
     events: list[tuple[str, str, tuple[str, ...]]] = []
+    scoped_events: list[tuple[str, str | None]] = []
     unregister = register_project_change_listener(lambda name, source, paths: events.append((name, source, paths)))
+    unregister_scoped = register_project_change_listener(
+        lambda name, source, paths, user_id: scoped_events.append((name, user_id))
+    )
     try:
         _write_project(pm, "p-hint", {"title": "PH", "style": "Photographic"})
         pm.load_project("p-hint")
     finally:
         unregister()
+        unregister_scoped()
 
     assert any(name == "p-hint" and "project.json" in paths for name, _source, paths in events)
+    assert ("p-hint", "default") in scoped_events
 
 
 def test_concurrent_migration_does_not_lose_data(pm: ProjectManager):

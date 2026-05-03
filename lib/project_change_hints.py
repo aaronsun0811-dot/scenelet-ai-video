@@ -14,12 +14,9 @@ from typing import Any, Literal
 logger = logging.getLogger(__name__)
 
 ProjectChangeSource = Literal["webui", "worker", "filesystem"]
-ProjectChangeListener = Callable[[str, ProjectChangeSource, tuple[str, ...]], None]
+ProjectChangeListener = Callable[..., None]
 ProjectChangeBatch = dict[str, Any]
-ProjectChangeBatchListener = Callable[
-    [str, ProjectChangeSource, tuple[ProjectChangeBatch, ...]],
-    None,
-]
+ProjectChangeBatchListener = Callable[..., None]
 
 _current_source: ContextVar[ProjectChangeSource] = ContextVar(
     "project_change_source",
@@ -49,6 +46,7 @@ def emit_project_change_hint(
     project_name: str,
     source: ProjectChangeSource | None = None,
     changed_paths: Iterable[str] | None = None,
+    user_id: str | None = None,
 ) -> None:
     """Notify listeners that project files were just written."""
     resolved_source = source or get_project_change_source()
@@ -58,7 +56,10 @@ def emit_project_change_hint(
 
     for listener in listeners:
         try:
-            listener(project_name, resolved_source, paths)
+            try:
+                listener(project_name, resolved_source, paths, user_id)
+            except TypeError:
+                listener(project_name, resolved_source, paths)
         except Exception:
             logger.exception("项目变更 hint listener 执行失败")
 
@@ -84,6 +85,7 @@ def emit_project_change_batch(
     project_name: str,
     changes: Iterable[ProjectChangeBatch],
     source: ProjectChangeSource | None = None,
+    user_id: str | None = None,
 ) -> None:
     """Notify listeners with a ready-to-broadcast project change batch."""
     resolved_source = source or get_project_change_source()
@@ -96,7 +98,10 @@ def emit_project_change_batch(
 
     for listener in listeners:
         try:
-            listener(project_name, resolved_source, payload)
+            try:
+                listener(project_name, resolved_source, payload, user_id)
+            except TypeError:
+                listener(project_name, resolved_source, payload)
         except Exception:
             logger.exception("项目变更 batch listener 执行失败")
 

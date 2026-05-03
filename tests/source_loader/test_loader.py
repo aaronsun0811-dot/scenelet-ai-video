@@ -37,6 +37,31 @@ def test_load_gbk_txt_writes_raw_backup(tmp_path: Path):
     assert result.used_encoding and result.used_encoding.lower() != "utf-8"
 
 
+def test_load_sanitizes_path_like_original_filename_for_raw_backup(tmp_path: Path):
+    project_source = tmp_path / "source"
+    project_source.mkdir()
+    src = tmp_path / "upload.txt"
+    src.write_bytes(("第一章\n" * 30).encode("gbk"))
+
+    result = SourceLoader.load(src, project_source, original_filename="../../project.json.txt")
+
+    assert result.normalized_path == project_source / "project.json.txt"
+    assert result.raw_path == project_source / "raw" / "project.json.txt"
+    assert result.raw_path.exists()
+    assert not (project_source.parent / "project.json.txt").exists()
+
+
+def test_detect_conflict_sanitizes_path_like_original_filename(tmp_path: Path):
+    project_source = tmp_path / "source"
+    project_source.mkdir()
+    (project_source / "novel.txt").write_text("已存在", encoding="utf-8")
+
+    has_conflict, suggested = SourceLoader.detect_conflict("../novel.epub", project_source)
+
+    assert has_conflict is True
+    assert suggested == "novel_1"
+
+
 def test_load_docx_writes_raw_backup(tmp_path: Path, docx_factory):
     project_source = tmp_path / "source"
     project_source.mkdir()

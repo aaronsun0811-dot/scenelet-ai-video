@@ -45,6 +45,7 @@ projects/.agent_data/transcripts/*.json
 projects/.agent_data/sessions.db
 
 # New unified ORM database (SQLite)
+projects/.scenelet.db
 projects/.arcreel.db
 # Old SQLite database backups (created by migration script)
 projects/.*.db.bak
@@ -59,6 +60,7 @@ CLAUDE.local.md
 
 # Local Codex runtime metadata
 .codex/
+.codex-run/
 
 # Frontend build artifacts
 frontend/node_modules/

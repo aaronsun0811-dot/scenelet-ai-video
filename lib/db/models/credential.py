@@ -5,17 +5,18 @@ from __future__ import annotations
 from sqlalchemy import Boolean, Index, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from lib.db.base import Base, TimestampMixin
+from lib.db.base import Base, TimestampMixin, UserOwnedMixin
 
 
-class ProviderCredential(TimestampMixin, Base):
-    """供应商凭证。每个供应商可有多条凭证，其中最多一条 is_active=True。"""
+class ProviderCredential(TimestampMixin, UserOwnedMixin, Base):
+    """供应商凭证。每个用户的每个供应商可有多条凭证，其中最多一条 is_active=True。"""
 
     __tablename__ = "provider_credential"
     __table_args__ = (
         Index("ix_provider_credential_provider", "provider"),
         Index(
             "uq_provider_credential_one_active",
+            "user_id",
             "provider",
             unique=True,
             sqlite_where=text("is_active = 1"),

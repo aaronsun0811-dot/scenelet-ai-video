@@ -26,6 +26,8 @@ def resolve_ark_api_key(api_key: str | None = None) -> str:
 
 def create_ark_client(*, api_key: str | None = None):
     """创建 Ark 客户端，统一校验 api_key 并构造。"""
+    resolved_api_key = resolve_ark_api_key(api_key)
+
     from volcenginesdkarkruntime import Ark
 
-    return Ark(base_url=ARK_BASE_URL, api_key=resolve_ark_api_key(api_key))
+    return Ark(base_url=ARK_BASE_URL, api_key=resolved_api_key)

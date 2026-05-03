@@ -226,8 +226,10 @@ class TestInstructorFallback:
 
         with (
             patch("lib.openai_shared.AsyncOpenAI", return_value=mock_client),
-            patch("instructor.from_openai", return_value=mock_patched),
+            patch("lib.text_backends.instructor_support.instructor") as mock_instructor,
         ):
+            mock_instructor.Mode.MD_JSON = "md-json"
+            mock_instructor.from_openai.return_value = mock_patched
             from lib.text_backends.openai import OpenAITextBackend
 
             backend = OpenAITextBackend(api_key="test-key")

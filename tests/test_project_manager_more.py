@@ -17,6 +17,9 @@ def _read_json(path: Path) -> dict:
 
 
 class _FakeTextBackend:
+    def __init__(self):
+        self.last_request = None
+
     @property
     def name(self):
         return "fake"
@@ -32,6 +35,7 @@ class _FakeTextBackend:
     async def generate(self, request):
         from lib.text_backends.base import TextGenerationResult
 
+        self.last_request = request
         return TextGenerationResult(
             text=json.dumps(
                 {
@@ -42,6 +46,98 @@ class _FakeTextBackend:
                 },
                 ensure_ascii=False,
             ),
+            provider="fake",
+            model="fake-model",
+        )
+
+
+class _FakeCharacterTextBackend(_FakeTextBackend):
+    async def generate(self, request):
+        from lib.text_backends.base import TextGenerationResult
+
+        self.last_request = request
+        return TextGenerationResult(
+            text=json.dumps(
+                {
+                    "characters": [
+                        {
+                            "name": "1. Alice",
+                            "description": "女主，目标明确，都市通勤装，冷静克制",
+                            "voice_style": "语速平稳，带一点压抑感",
+                        },
+                        {
+                            "name": "Bob",
+                            "description": "男配，外向健谈，休闲夹克，负责推动误会升级",
+                            "voice_style": "轻快直接",
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            provider="fake",
+            model="fake-model",
+        )
+
+
+class _FakeSceneTextBackend(_FakeTextBackend):
+    async def generate(self, request):
+        from lib.text_backends.base import TextGenerationResult
+
+        self.last_request = request
+        return TextGenerationResult(
+            text=json.dumps(
+                {
+                    "scenes": [
+                        {
+                            "name": "1. 办公室",
+                            "description": "现代开放式办公室，玻璃隔断，冷白灯，适合多人对话调度",
+                        },
+                        {
+                            "name": "茶水间",
+                            "description": "狭窄茶水间，咖啡机和置物架，适合低声冲突",
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            provider="fake",
+            model="fake-model",
+        )
+
+
+class _FakePropTextBackend(_FakeTextBackend):
+    async def generate(self, request):
+        from lib.text_backends.base import TextGenerationResult
+
+        self.last_request = request
+        return TextGenerationResult(
+            text=json.dumps(
+                {
+                    "props": [
+                        {
+                            "name": "合同",
+                            "description": "A4 纸质合同，蓝色文件夹装订，是误会升级的关键物件",
+                        },
+                        {
+                            "name": "录音笔",
+                            "description": "黑色小型录音笔，放在桌角，记录关键对白",
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            provider="fake",
+            model="fake-model",
+        )
+
+
+class _FakeEpisodeDraftTextBackend(_FakeTextBackend):
+    async def generate(self, request):
+        from lib.text_backends.base import TextGenerationResult
+
+        self.last_request = request
+        return TextGenerationResult(
+            text="# 第 1 集草稿\n\n## Scene E1S01\n- 场景：办公室\n- 角色：Alice、Bob\n- 冲突：合同误会升级",
             provider="fake",
             model="fake-model",
         )
@@ -87,6 +183,83 @@ class TestProjectManagerMore:
         project = pm.create_project_metadata("demo", "")
 
         assert project["title"] == "demo"
+
+    def test_create_project_metadata_applies_content_type_workflow_defaults(self, tmp_path):
+        pm = ProjectManager(tmp_path / "projects")
+        pm.create_project("demo")
+
+        project = pm.create_project_metadata("demo", "Demo", extras={"content_type": "scene_sketch"})
+
+        assert project["content_type"] == "scene_sketch"
+        assert project["content_mode"] == "drama"
+        assert project["aspect_ratio"] == "16:9"
+        assert project["generation_mode"] == "storyboard"
+
+    def test_create_project_metadata_preserves_explicit_workflow_choices(self, tmp_path):
+        pm = ProjectManager(tmp_path / "projects")
+        pm.create_project("demo")
+
+        project = pm.create_project_metadata(
+            "demo",
+            "Demo",
+            aspect_ratio="9:16",
+            extras={"content_type": "scene_sketch", "generation_mode": "grid"},
+        )
+
+        assert project["content_mode"] == "drama"
+        assert project["aspect_ratio"] == "9:16"
+        assert project["generation_mode"] == "grid"
+
+    def test_load_project_repairs_legacy_content_type_workflow_fields_without_touching_metadata(self, tmp_path):
+        pm = ProjectManager(tmp_path / "projects")
+        project_dir = pm.create_project("demo")
+        project_file = project_dir / "project.json"
+        _write(
+            project_file,
+            json.dumps(
+                {
+                    "title": "Legacy",
+                    "content_type": "scene_sketch",
+                    "content_mode": "narration",
+                    "episodes": [],
+                    "characters": {},
+                    "scenes": {},
+                    "props": {},
+                    "metadata": {
+                        "created_at": "2026-05-01T00:00:00",
+                        "updated_at": "2026-05-01T00:00:00",
+                    },
+                },
+                ensure_ascii=False,
+            ),
+        )
+
+        project = pm.load_project("demo")
+        stored = _read_json(project_file)
+
+        assert project["content_mode"] == "drama"
+        assert project["aspect_ratio"] == "16:9"
+        assert project["generation_mode"] == "storyboard"
+        assert stored["metadata"]["updated_at"] == "2026-05-01T00:00:00"
+
+    def test_update_project_applies_content_type_workflow_fields(self, tmp_path):
+        pm = ProjectManager(tmp_path / "projects")
+        pm.create_project("demo")
+        pm.create_project_metadata("demo", "Demo")
+
+        pm.update_project(
+            "demo",
+            lambda project: project.update(
+                {
+                    "content_type": "ad_story",
+                    "content_mode": "narration",
+                }
+            ),
+        )
+
+        project = pm.load_project("demo")
+        assert project["content_mode"] == "drama"
+        assert project["generation_mode"] == "reference_video"
 
     def test_generate_project_name_is_unique_and_safe(self, tmp_path):
         pm = ProjectManager(tmp_path / "projects")
@@ -407,6 +580,203 @@ class TestProjectManagerMore:
         with pytest.raises(ValueError):
             await pm_empty.generate_overview("demo")
 
+    @pytest.mark.asyncio
+    async def test_generate_overview_injects_content_workflow(self, tmp_path, monkeypatch):
+        pm = ProjectManager(tmp_path / "projects")
+        pm.create_project("demo")
+        pm.create_project_metadata(
+            "demo",
+            "Demo",
+            extras={"content_type": "ad_story"},
+        )
+        _write(pm.get_project_path("demo") / "source" / "brief.txt", "产品卖点：省时")
+
+        backend = _FakeTextBackend()
+
+        async def _fake_create_backend(*args, **kwargs):
+            return backend
+
+        monkeypatch.setattr("lib.text_generator.create_text_backend_for_task", _fake_create_backend)
+        await pm.generate_overview("demo")
+
+        assert backend.last_request is not None
+        assert "内容类型：广告剧情" in backend.last_request.prompt
+        assert "痛点" in backend.last_request.prompt
+
+    @pytest.mark.asyncio
+    async def test_generate_characters_adds_and_completes_existing_roles(self, tmp_path, monkeypatch):
+        pm = ProjectManager(tmp_path / "projects")
+        pm.create_project("demo")
+        pm.create_project_metadata(
+            "demo",
+            "Demo",
+            extras={"content_type": "scene_sketch"},
+        )
+        pm.add_character("demo", "Alice", "")
+        _write(pm.get_project_path("demo") / "source" / "story.txt", "Alice 和 Bob 在办公室发生误会。")
+
+        backend = _FakeCharacterTextBackend()
+
+        async def _fake_create_backend(*args, **kwargs):
+            return backend
+
+        monkeypatch.setattr("lib.text_generator.create_text_backend_for_task", _fake_create_backend)
+        result = await pm.generate_characters("demo")
+
+        assert result["source"] == "source"
+        assert result["added"] == 1
+        assert result["updated"] == 1
+        project = pm.load_project("demo")
+        assert project["characters"]["Alice"]["description"].startswith("女主")
+        assert project["characters"]["Bob"]["voice_style"] == "轻快直接"
+        assert backend.last_request is not None
+        assert "内容类型：情景剧" in backend.last_request.prompt
+        assert "existing_characters" in backend.last_request.prompt
+
+    @pytest.mark.asyncio
+    async def test_generate_characters_uses_overview_when_source_is_empty(self, tmp_path, monkeypatch):
+        pm = ProjectManager(tmp_path / "projects")
+        pm.create_project("demo")
+        pm.create_project_metadata("demo", "Demo")
+        project = pm.load_project("demo")
+        project["overview"] = {
+            "synopsis": "Alice 和 Bob 围绕一个秘密展开冲突。",
+            "genre": "情景剧",
+            "theme": "信任",
+            "world_setting": "现代办公室",
+        }
+        pm.save_project("demo", project)
+
+        async def _fake_create_backend(*args, **kwargs):
+            return _FakeCharacterTextBackend()
+
+        monkeypatch.setattr("lib.text_generator.create_text_backend_for_task", _fake_create_backend)
+        result = await pm.generate_characters("demo")
+
+        assert result["source"] == "overview"
+        assert result["added"] == 2
+
+    @pytest.mark.asyncio
+    async def test_generate_scenes_and_props_from_source(self, tmp_path, monkeypatch):
+        pm = ProjectManager(tmp_path / "projects")
+        pm.create_project("demo")
+        pm.create_project_metadata(
+            "demo",
+            "Demo",
+            extras={"content_type": "scene_sketch"},
+        )
+        pm.add_project_scene("demo", "办公室", "")
+        _write(pm.get_project_path("demo") / "source" / "story.txt", "办公室里，合同和录音笔引发误会。")
+
+        scene_backend = _FakeSceneTextBackend()
+
+        async def _fake_scene_backend(*args, **kwargs):
+            return scene_backend
+
+        monkeypatch.setattr("lib.text_generator.create_text_backend_for_task", _fake_scene_backend)
+        scenes = await pm.generate_scenes("demo")
+
+        assert scenes["added"] == 1
+        assert scenes["updated"] == 1
+        project = pm.load_project("demo")
+        assert project["scenes"]["办公室"]["description"].startswith("现代开放式办公室")
+        assert "茶水间" in project["scenes"]
+        assert scene_backend.last_request is not None
+        assert "existing_scenes" in scene_backend.last_request.prompt
+
+        prop_backend = _FakePropTextBackend()
+
+        async def _fake_prop_backend(*args, **kwargs):
+            return prop_backend
+
+        monkeypatch.setattr("lib.text_generator.create_text_backend_for_task", _fake_prop_backend)
+        props = await pm.generate_props("demo")
+
+        assert props["added"] == 2
+        project = pm.load_project("demo")
+        assert project["props"]["合同"]["description"].startswith("A4")
+        assert "录音笔" in project["props"]
+        assert prop_backend.last_request is not None
+        assert "existing_props" in prop_backend.last_request.prompt
+
+    @pytest.mark.asyncio
+    async def test_generate_episode_draft_creates_step1_and_episode_entry(self, tmp_path, monkeypatch):
+        pm = ProjectManager(tmp_path / "projects")
+        pm.create_project("demo")
+        pm.create_project_metadata(
+            "demo",
+            "Demo",
+            "Realistic",
+            "drama",
+            extras={"content_type": "scene_sketch"},
+        )
+        pm.add_character("demo", "Alice", "女主")
+        pm.add_project_scene("demo", "办公室", "现代办公室")
+        pm.add_prop("demo", "合同", "关键合同")
+        _write(pm.get_project_path("demo") / "source" / "story.txt", "Alice 和 Bob 围绕合同发生误会。")
+
+        backend = _FakeEpisodeDraftTextBackend()
+
+        async def _fake_create_backend(*args, **kwargs):
+            return backend
+
+        monkeypatch.setattr("lib.text_generator.create_text_backend_for_task", _fake_create_backend)
+        result = await pm.generate_episode_draft("demo", 1)
+
+        assert result["episode"] == 1
+        assert result["draft_path"] == "drafts/episode_1/step1_normalized_script.md"
+        project = pm.load_project("demo")
+        assert project["episodes"][0]["script_file"] == "scripts/episode_1.json"
+        assert (pm.get_project_path("demo") / result["draft_path"]).read_text(encoding="utf-8").startswith("# 第 1 集")
+        assert backend.last_request is not None
+        assert "内容类型：情景剧" in backend.last_request.prompt
+        assert "角色库" in backend.last_request.prompt
+
+    @pytest.mark.asyncio
+    async def test_generate_episode_draft_includes_previous_episode_context(self, tmp_path, monkeypatch):
+        pm = ProjectManager(tmp_path / "projects")
+        pm.create_project("demo")
+        pm.create_project_metadata("demo", "Demo", "Realistic", "drama")
+        pm.save_script(
+            "demo",
+            {
+                "episode": 1,
+                "title": "第一集：合同误会",
+                "content_mode": "drama",
+                "duration_seconds": 8,
+                "summary": "Alice 发现合同被 Bob 调换，二人在办公室爆发争执。",
+                "novel": {"title": "Demo", "chapter": "1"},
+                "scenes": [
+                    {
+                        "scene_id": "E1S01",
+                        "duration_seconds": 8,
+                        "segment_break": False,
+                        "scene_type": "办公室对峙",
+                        "characters_in_scene": ["Alice", "Bob"],
+                        "image_prompt": "Alice 与 Bob 在办公室争执",
+                        "video_prompt": "Alice 把合同拍在桌上",
+                        "transition_to_next": "cut",
+                    }
+                ],
+            },
+            "episode_1.json",
+        )
+        _write(pm.get_project_path("demo") / "source" / "story.txt", "Alice 和 Bob 的误会继续升级。")
+        backend = _FakeEpisodeDraftTextBackend()
+
+        async def _fake_create_backend(*args, **kwargs):
+            return backend
+
+        monkeypatch.setattr("lib.text_generator.create_text_backend_for_task", _fake_create_backend)
+        result = await pm.generate_episode_draft("demo", 2)
+
+        assert result["episode"] == 2
+        assert result["draft_path"] == "drafts/episode_2/step1_normalized_script.md"
+        assert backend.last_request is not None
+        assert "<previous_episodes>" in backend.last_request.prompt
+        assert "第一集：合同误会" in backend.last_request.prompt
+        assert "Alice 发现合同被 Bob 调换" in backend.last_request.prompt
+
 
 class TestFromCwd:
     """Tests for ProjectManager.from_cwd() classmethod."""
@@ -621,3 +991,126 @@ def test_read_source_files_raises_on_non_utf8(tmp_path):
     with pytest.raises(SourceDecodeError) as exc_info:
         pm._read_source_files("demo")
     assert exc_info.value.filename == "broken.txt"
+
+
+def test_user_scoped_managers_allow_same_project_name(tmp_path):
+    base = ProjectManager(tmp_path / "projects")
+    alice = base.for_user("alice")
+    bob = base.for_user("bob")
+
+    alice.create_project("same")
+    alice.create_project_metadata("same", "Alice Same", extras={"owner_user_id": "alice"})
+    bob.create_project("same")
+    bob.create_project_metadata("same", "Bob Same", extras={"owner_user_id": "bob"})
+
+    alice_path = alice.get_project_path("same")
+    bob_path = bob.get_project_path("same")
+    assert alice_path != bob_path
+    assert ProjectManager.USER_PROJECTS_DIR in alice_path.parts
+    assert ProjectManager.USER_PROJECTS_DIR in bob_path.parts
+    assert alice.load_project("same")["title"] == "Alice Same"
+    assert bob.load_project("same")["title"] == "Bob Same"
+    assert alice.list_projects() == ["same"]
+    assert bob.list_projects() == ["same"]
+
+    with pytest.raises(FileExistsError):
+        alice.create_project("same")
+
+
+def test_user_scoped_manager_can_read_owned_legacy_project(tmp_path):
+    base = ProjectManager(tmp_path / "projects")
+    base.create_project("legacy")
+    base.create_project_metadata("legacy", "Legacy", extras={"owner_user_id": "alice"})
+
+    alice = base.for_user("alice")
+    bob = base.for_user("bob")
+
+    assert alice.get_project_path("legacy") == base.get_project_path("legacy")
+    assert "legacy" in alice.list_projects()
+    with pytest.raises(FileExistsError):
+        alice.create_project("legacy")
+    with pytest.raises(FileNotFoundError):
+        bob.get_project_path("legacy")
+
+
+def test_user_scoped_manager_can_read_shared_project(tmp_path):
+    base = ProjectManager(tmp_path / "projects")
+    alice = base.for_user("alice")
+    bob = base.for_user("bob")
+
+    alice.create_project("shared")
+    alice.create_project_metadata(
+        "shared",
+        "Alice Shared",
+        extras={
+            "owner_user_id": "alice",
+            "project_access": {
+                "members": {
+                    "bob": {
+                        "role": "editor",
+                        "added_at": "2026-05-01T00:00:00",
+                    }
+                }
+            },
+        },
+    )
+
+    assert bob.list_projects() == ["shared"]
+    assert bob.load_project("shared")["title"] == "Alice Shared"
+    assert bob.get_project_path("shared") == alice.get_project_path("shared")
+
+    project = bob.load_project("shared")
+    project["title"] = "Edited By Bob"
+    bob.save_project("shared", project)
+    assert alice.load_project("shared")["title"] == "Edited By Bob"
+
+    bob.create_project("shared")
+    bob.create_project_metadata("shared", "Bob Shared", extras={"owner_user_id": "bob"})
+
+    assert bob.get_project_path("shared") != alice.get_project_path("shared")
+    assert bob.load_project("shared")["title"] == "Bob Shared"
+    assert alice.load_project("shared")["title"] == "Edited By Bob"
+
+
+def test_migrate_legacy_user_namespaces_moves_owned_projects(tmp_path):
+    base = ProjectManager(tmp_path / "projects")
+    base.create_project("legacy")
+    base.create_project_metadata("legacy", "Legacy", extras={"owner_user_id": "alice"})
+    base.create_project("default-project")
+    base.create_project_metadata("default-project", "Default")
+
+    preview = base.migrate_legacy_user_namespaces(dry_run=True)
+    assert [item["project_name"] for item in preview["candidates"]] == ["legacy"]
+    assert preview["migrated"] == []
+    assert base.get_project_path("legacy").exists()
+
+    result = base.migrate_legacy_user_namespaces(dry_run=False)
+    assert [item["project_name"] for item in result["migrated"]] == ["legacy"]
+    assert not (base.projects_root / "legacy").exists()
+    assert base.for_user("alice").load_project("legacy")["title"] == "Legacy"
+    assert base.get_project_path("default-project").exists()
+
+
+def test_migrate_legacy_user_namespaces_reports_conflicts(tmp_path):
+    base = ProjectManager(tmp_path / "projects")
+    base.create_project("legacy")
+    base.create_project_metadata("legacy", "Root Legacy", extras={"owner_user_id": "alice"})
+    alice = base.for_user("alice")
+    target_dir = alice._project_storage_root() / "legacy"
+    _write(
+        target_dir / "project.json",
+        json.dumps(
+            {
+                "title": "Namespaced Legacy",
+                "metadata": {},
+                "owner_user_id": "alice",
+            }
+        ),
+    )
+
+    result = base.migrate_legacy_user_namespaces(dry_run=False)
+
+    assert result["migrated"] == []
+    assert result["conflicts"][0]["project_name"] == "legacy"
+    assert (base.projects_root / "legacy").exists()
+    assert alice.load_project("legacy")["title"] == "Namespaced Legacy"

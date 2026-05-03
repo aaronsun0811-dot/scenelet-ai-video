@@ -19,6 +19,21 @@ const inputCls = "w-full rounded-lg border border-gray-700 bg-gray-900/80 px-3 p
 const inputClsPlaceholder = `${inputCls} placeholder:text-gray-600`;
 const primaryBtnCls = "inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs text-white transition-colors hover:bg-indigo-500 disabled:opacity-50 focus-ring";
 
+const DEFAULT_BASE_URL_HINTS: Record<string, string> = {
+  deepseek: "https://api.deepseek.com",
+  qwen: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  zhipu: "https://open.bigmodel.cn/api/paas/v4",
+  moonshot: "https://api.moonshot.cn/v1",
+};
+
+function baseUrlPlaceholder(providerId: string, fallback: string): string {
+  return DEFAULT_BASE_URL_HINTS[providerId] ?? fallback;
+}
+
+function resolveBaseUrl(providerId: string, input: string): string | undefined {
+  return input.trim() || DEFAULT_BASE_URL_HINTS[providerId] || undefined;
+}
+
 interface RowProps {
   cred: ProviderCredential;
   providerId: string;
@@ -142,9 +157,10 @@ const CredentialRow = memo(function CredentialRow({ cred, providerId, isVertex, 
             onClick={voidPromise(handleTest)}
             disabled={testing}
             aria-label={t("test_credential", { name: cred.name })}
-            className={`rounded p-1.5 text-gray-500 transition-colors hover:bg-gray-800 hover:text-gray-300 focus-ring`}
+            className="inline-flex items-center gap-1.5 rounded-md border border-gray-700 px-2 py-1 text-xs text-gray-400 transition-colors hover:bg-gray-800 hover:text-gray-200 disabled:cursor-not-allowed disabled:opacity-50 focus-ring"
           >
             {testing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wifi className="h-3.5 w-3.5" />}
+            {testing ? t("testing_connection") : t("test_connection")}
           </button>
           {!isVertex && (
             <button
@@ -238,7 +254,7 @@ const CredentialRow = memo(function CredentialRow({ cred, providerId, isVertex, 
               className={inputClsPlaceholder}
             />
           </div>
-          {providerId === "gemini-aistudio" && (
+          {!isVertex && (
             <div>
               <label htmlFor={`${editPrefix}-baseurl`} className="mb-1 block text-xs text-gray-500">{t("base_url_optional")}</label>
               <input
@@ -247,7 +263,7 @@ const CredentialRow = memo(function CredentialRow({ cred, providerId, isVertex, 
                 type="url"
                 value={draft.base_url}
                 onChange={(e) => setDraft((d) => ({ ...d, base_url: e.target.value }))}
-                placeholder={t("default_url_placeholder")}
+                placeholder={baseUrlPlaceholder(providerId, t("default_url_placeholder"))}
                 className={inputClsPlaceholder}
               />
             </div>
@@ -282,7 +298,7 @@ const CredentialRow = memo(function CredentialRow({ cred, providerId, isVertex, 
 interface AddFormProps {
   providerId: string;
   isVertex: boolean;
-  onCreated: () => void;
+  onCreated: (credential?: ProviderCredential, testResult?: ProviderTestResult) => void;
   onCancel: () => void;
 }
 
@@ -292,15 +308,19 @@ function AddCredentialForm({ providerId, isVertex, onCreated, onCancel }: AddFor
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [saving, setSaving] = useState(false);
+  const [testingDraft, setTestingDraft] = useState(false);
+  const [draftTestResult, setDraftTestResult] = useState<ProviderTestResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const nameRef = useAutoFocus<HTMLInputElement>();
+  const supportsDraftTest = !isVertex;
 
   const handleSubmit = async () => {
     if (!name.trim()) return;
     setSaving(true);
     setError(null);
     try {
+      let created: ProviderCredential;
       if (isVertex) {
         const file = fileRef.current?.files?.[0];
         if (!file) {
@@ -308,24 +328,52 @@ function AddCredentialForm({ providerId, isVertex, onCreated, onCancel }: AddFor
           setSaving(false);
           return;
         }
-        await API.uploadVertexCredential(name, file);
+        created = await API.uploadVertexCredential(name, file);
       } else {
         if (!apiKey.trim()) {
           setError(t("enter_api_key_required"));
           setSaving(false);
           return;
         }
-        await API.createCredential(providerId, {
+        created = await API.createCredential(providerId, {
           name: name.trim(),
           api_key: apiKey || undefined,
-          base_url: baseUrl || undefined,
+          base_url: resolveBaseUrl(providerId, baseUrl),
         });
       }
-      onCreated();
+      let testResult: ProviderTestResult;
+      try {
+        testResult = await API.testProviderConnection(providerId, created.id);
+      } catch (e) {
+        testResult = { success: false, available_models: [], message: errMsg(e) };
+      }
+      onCreated(created, testResult);
     } catch (e) {
       setError(errMsg(e));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleDraftTest = async () => {
+    if (!supportsDraftTest) return;
+    if (!apiKey.trim()) {
+      setError(t("enter_api_key_required"));
+      return;
+    }
+    setTestingDraft(true);
+    setError(null);
+    setDraftTestResult(null);
+    try {
+      const result = await API.testProviderConnection(providerId, undefined, {
+        api_key: apiKey.trim(),
+        base_url: resolveBaseUrl(providerId, baseUrl),
+      });
+      setDraftTestResult(result);
+    } catch (e) {
+      setDraftTestResult({ success: false, available_models: [], message: errMsg(e) });
+    } finally {
+      setTestingDraft(false);
     }
   };
 
@@ -368,28 +416,60 @@ function AddCredentialForm({ providerId, isVertex, onCreated, onCancel }: AddFor
               type="password"
               autoComplete="off"
               value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
+              onChange={(e) => {
+                setApiKey(e.target.value);
+                setDraftTestResult(null);
+              }}
               className={inputCls}
             />
           </div>
-          {providerId === "gemini-aistudio" && (
-            <div>
-              <label htmlFor="cred-add-baseurl" className="mb-1 block text-xs text-gray-500">{t("base_url_optional")}</label>
-              <input
-                id="cred-add-baseurl"
-                name="base_url"
-                type="url"
-                value={baseUrl}
-                onChange={(e) => setBaseUrl(e.target.value)}
-                placeholder={t("default_url_placeholder")}
-                className={inputClsPlaceholder}
-              />
-            </div>
-          )}
+          <div>
+            <label htmlFor="cred-add-baseurl" className="mb-1 block text-xs text-gray-500">{t("base_url_optional")}</label>
+            <input
+              id="cred-add-baseurl"
+              name="base_url"
+              type="url"
+              value={baseUrl}
+              onChange={(e) => {
+                setBaseUrl(e.target.value);
+                setDraftTestResult(null);
+              }}
+              placeholder={baseUrlPlaceholder(providerId, t("default_url_placeholder"))}
+              className={inputClsPlaceholder}
+            />
+          </div>
         </>
       )}
       {error && <p className="text-xs text-rose-400" aria-live="polite">{error}</p>}
+      {draftTestResult && (
+        <div
+          aria-live="polite"
+          className={`rounded-md px-3 py-2 text-xs ${
+            draftTestResult.success
+              ? "bg-green-900/20 text-green-400"
+              : "bg-rose-900/15 text-rose-400"
+          }`}
+        >
+          {draftTestResult.message}
+          {draftTestResult.success && draftTestResult.available_models.length > 0 && (
+            <div className="mt-1 opacity-70">
+              {t("available_models")}{draftTestResult.available_models.join(", ")}
+            </div>
+          )}
+        </div>
+      )}
       <div className="flex gap-2 pt-0.5">
+        {supportsDraftTest && (
+          <button
+            type="button"
+            onClick={() => void handleDraftTest()}
+            disabled={testingDraft || saving || !apiKey.trim()}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-700 px-3 py-1.5 text-xs text-gray-300 transition-colors hover:bg-gray-800 hover:text-gray-100 disabled:cursor-not-allowed disabled:opacity-50 focus-ring"
+          >
+            {testingDraft ? <Loader2 className="h-3 w-3 animate-spin" /> : <Wifi className="h-3 w-3" />}
+            {testingDraft ? t("testing_connection") : t("test_connection")}
+          </button>
+        )}
         <button
           type="button"
           onClick={() => void handleSubmit()}
@@ -397,7 +477,7 @@ function AddCredentialForm({ providerId, isVertex, onCreated, onCancel }: AddFor
           className={primaryBtnCls}
         >
           {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plus className="h-3 w-3" />}
-          {t("add")}
+          {saving ? t("adding_and_testing_credential") : t("add_and_test_credential")}
         </button>
         <button
           type="button"
@@ -424,6 +504,10 @@ export function CredentialList({ providerId, onChanged }: Props) {
   const [credentials, setCredentials] = useState<ProviderCredential[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
+  const [lastCreatedTest, setLastCreatedTest] = useState<{
+    credentialName: string;
+    result: ProviderTestResult;
+  } | null>(null);
   const isVertex = providerId === "gemini-vertex";
 
   // 用 ref 存储 onChanged 以稳定 refresh 引用，避免父组件 re-render 导致无限循环
@@ -448,6 +532,7 @@ export function CredentialList({ providerId, onChanged }: Props) {
   useEffect(() => {
     setLoading(true);
     setShowAdd(false);
+    setLastCreatedTest(null);
     void refresh();
   }, [refresh]);
 
@@ -466,7 +551,10 @@ export function CredentialList({ providerId, onChanged }: Props) {
         {!showAdd && (
           <button
             type="button"
-            onClick={() => setShowAdd(true)}
+            onClick={() => {
+              setLastCreatedTest(null);
+              setShowAdd(true);
+            }}
             className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-[var(--neon-500)] transition-colors hover:bg-[var(--neon-500)]/10 focus-ring`}
           >
             <Plus className="h-3 w-3" /> {t("add_credential")}
@@ -479,11 +567,35 @@ export function CredentialList({ providerId, onChanged }: Props) {
           <p className="text-sm text-gray-500">{t("no_credentials")}</p>
           <button
             type="button"
-            onClick={() => setShowAdd(true)}
+            onClick={() => {
+              setLastCreatedTest(null);
+              setShowAdd(true);
+            }}
             className={`mt-2 inline-flex items-center gap-1 text-xs text-[var(--neon-500)] transition-colors hover:text-[var(--neon-400)] focus-ring`}
           >
             <Plus className="h-3 w-3" /> {t("add_first_credential")}
           </button>
+        </div>
+      )}
+
+      {lastCreatedTest && (
+        <div
+          className={`mb-2 rounded-lg border px-3 py-2 text-xs ${
+            lastCreatedTest.result.success
+              ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+              : "border-rose-500/30 bg-rose-500/10 text-rose-300"
+          }`}
+          aria-live="polite"
+        >
+          <div className="font-medium">
+            {t("credential_added_test_summary", { name: lastCreatedTest.credentialName })}
+          </div>
+          <div className="mt-1 opacity-90">{lastCreatedTest.result.message}</div>
+          {lastCreatedTest.result.success && lastCreatedTest.result.available_models.length > 0 && (
+            <div className="mt-1 opacity-70">
+              {t("available_models")}{lastCreatedTest.result.available_models.join(", ")}
+            </div>
+          )}
         </div>
       )}
 
@@ -504,8 +616,11 @@ export function CredentialList({ providerId, onChanged }: Props) {
           <AddCredentialForm
             providerId={providerId}
             isVertex={isVertex}
-            onCreated={() => {
+            onCreated={(credential, testResult) => {
               setShowAdd(false);
+              if (credential && testResult) {
+                setLastCreatedTest({ credentialName: credential.name, result: testResult });
+              }
               void handleChanged();
             }}
             onCancel={() => setShowAdd(false)}

@@ -26,6 +26,18 @@ from lib.video_backends.base import (
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_VIDEO_MODEL = "veo-3.1-lite-generate-preview"
+
+
+def _load_google_genai() -> tuple[Any, Any]:
+    """Load google-genai at runtime and surface dependency breakage clearly."""
+    try:
+        from google import genai as google_genai
+        from google.genai import types as google_types
+    except Exception as exc:  # pragma: no cover - exact failure depends on installed SDK version
+        raise RuntimeError("Google GenAI SDK 加载失败，请检查 google-genai 依赖版本") from exc
+    return google_genai, google_types
+
 
 class GeminiVideoBackend:
     """Gemini (Veo) 视频生成后端。"""
@@ -39,8 +51,7 @@ class GeminiVideoBackend:
         video_model: str | None = None,
         base_url: str | None = None,
     ):
-        from google import genai as _genai
-        from google.genai import types as _types
+        _genai, _types = _load_google_genai()
 
         self._types = _types
         self._rate_limiter = rate_limiter or get_shared_rate_limiter()
@@ -48,9 +59,7 @@ class GeminiVideoBackend:
         self._credentials = None
         self._project_id = None
 
-        from lib.cost_calculator import cost_calculator
-
-        self._video_model = video_model or os.environ.get("GEMINI_VIDEO_MODEL", cost_calculator.DEFAULT_VIDEO_MODEL)
+        self._video_model = video_model or os.environ.get("GEMINI_VIDEO_MODEL", DEFAULT_VIDEO_MODEL)
 
         if self._backend_type == "vertex":
             import json as json_module

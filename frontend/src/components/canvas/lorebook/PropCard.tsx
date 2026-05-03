@@ -206,6 +206,13 @@ export function PropCard({
         loading={generating}
         label={prop.prop_sheet ? t("regenerate_design") : t("generate_design")}
         className="w-full justify-center"
+        preflight={{
+          projectName,
+          taskType: "prop",
+          resourceId: name,
+          targetLabel: name,
+          payload: { prompt: prop.description ?? "" },
+        }}
       />
     </div>
   );

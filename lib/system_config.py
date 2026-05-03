@@ -159,6 +159,13 @@ def _read_float(value: Any) -> float | None:
     return None
 
 
+def _safe_config_read_error(exc: OSError | json.JSONDecodeError) -> str:
+    """Return a log-safe config read error without echoing file contents."""
+    if isinstance(exc, json.JSONDecodeError):
+        return f"invalid JSON at line {exc.lineno} column {exc.colno}"
+    return exc.__class__.__name__
+
+
 @dataclass(frozen=True)
 class SystemConfigPaths:
     config_path: Path
@@ -203,6 +210,8 @@ class SystemConfigManager:
         "ANTHROPIC_DEFAULT_OPUS_MODEL",
         "ANTHROPIC_DEFAULT_SONNET_MODEL",
         "CLAUDE_CODE_SUBAGENT_MODEL",
+        "SCENELET_AGENT_MODEL_BACKEND",
+        "ARCREEL_AGENT_MODEL_BACKEND",
         "GEMINI_IMAGE_MODEL",
         "GEMINI_VIDEO_MODEL",
         "GEMINI_VIDEO_GENERATE_AUDIO",
@@ -216,6 +225,9 @@ class SystemConfigManager:
         "ARK_API_KEY",
         "FILE_SERVICE_BASE_URL",
         "XAI_API_KEY",
+        "GOOGLE_MAPS_API_KEY",
+        "BAIDU_MAPS_API_KEY",
+        "AMAP_MAPS_API_KEY",
     )
 
     def __init__(self, project_root: Path):
@@ -240,9 +252,11 @@ class SystemConfigManager:
             raw = self.paths.config_path.read_text(encoding="utf-8")
             data = json.loads(raw)
         except (OSError, json.JSONDecodeError) as exc:
-            # TODO(multi-user): JSONDecodeError 可能在消息中包含 config 文件片段（含 API key），
-            # 多用户场景需 sanitize 日志内容。
-            logger.warning("Failed to read system config, using empty overrides: %s", exc)
+            logger.warning(
+                "Failed to read system config at %s, using empty overrides: %s",
+                self.paths.config_path,
+                _safe_config_read_error(exc),
+            )
             return {"version": 1, "updated_at": None, "overrides": {}}, False
 
         if not isinstance(data, dict):
@@ -421,6 +435,16 @@ class SystemConfigManager:
                 self._set_env(env_key, overrides.get(override_key))
             else:
                 self._restore_or_unset(env_key)
+
+        agent_backend = _safe_str(overrides.get("agent_model_backend"))
+        if agent_backend is not None:
+            self._set_env("SCENELET_AGENT_MODEL_BACKEND", agent_backend)
+            self._set_env("ARCREEL_AGENT_MODEL_BACKEND", agent_backend)
+            model_id = agent_backend.split("/", 1)[1] if "/" in agent_backend else agent_backend
+            self._set_env("ANTHROPIC_MODEL", model_id)
+        else:
+            self._restore_or_unset("SCENELET_AGENT_MODEL_BACKEND")
+            self._restore_or_unset("ARCREEL_AGENT_MODEL_BACKEND")
 
         # Models, provider keys & misc simple overrides
         for override_key, env_key in (

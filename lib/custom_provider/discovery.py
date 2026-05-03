@@ -4,13 +4,28 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
-from google import genai
 from openai import OpenAI
 
 from lib.custom_provider.endpoints import endpoint_to_media_type, infer_endpoint
 
 logger = logging.getLogger(__name__)
+
+genai: Any | None = None
+
+
+def _get_google_genai():
+    """Load google-genai lazily so OpenAI discovery is not coupled to it."""
+    global genai
+    if genai is not None:
+        return genai
+    try:
+        from google import genai as google_genai
+    except Exception as exc:  # pragma: no cover - depends on installed SDK version
+        raise RuntimeError("Google GenAI SDK 加载失败，请检查 google-genai 依赖版本") from exc
+    genai = google_genai
+    return google_genai
 
 
 async def discover_models(
@@ -52,7 +67,7 @@ async def _discover_google(base_url: str | None, api_key: str) -> list[dict]:
         effective_url = ensure_google_base_url(base_url) if base_url else None
         if effective_url:
             kwargs["http_options"] = {"base_url": effective_url}
-        client = genai.Client(**kwargs)
+        client = _get_google_genai().Client(**kwargs)
         raw_models = client.models.list()
 
         entries: list[tuple[str, str]] = []

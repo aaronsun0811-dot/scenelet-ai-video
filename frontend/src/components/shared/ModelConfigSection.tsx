@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { ProviderModelSelect } from "@/components/ui/ProviderModelSelect";
 import { DEFAULT_DURATIONS, lookupSupportedDurations, lookupResolutions } from "@/utils/provider-models";
@@ -11,6 +11,14 @@ import type { CustomProviderInfo } from "@/types/custom-provider";
 // ---------------------------------------------------------------------------
 
 const EMPTY_CUSTOM_PROVIDERS: CustomProviderInfo[] = [];
+
+function UnavailableModelHint({ children }: { children: ReactNode }) {
+  return (
+    <div className="rounded-lg border border-dashed border-gray-800 bg-gray-900/50 px-3 py-2 text-sm text-gray-500">
+      {children}
+    </div>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -137,21 +145,25 @@ export function ModelConfigSection({
       {showVideo && (
         <div className="rounded-xl border border-gray-800 bg-gray-950/40 p-4">
           <div className="mb-3 text-sm font-medium text-gray-100">{t("model_video")}</div>
-          <ProviderModelSelect
-            value={value.videoBackend}
-            options={options.videoBackends}
-            providerNames={options.providerNames}
-            onChange={handleVideoChange}
-            allowDefault
-            defaultLabel={t("use_global_default")}
-            defaultHint={
-              globalDefaults.video
-                ? t("current_global_default", { value: globalDefaults.video })
-                : undefined
-            }
-            fallbackValue={globalDefaults.video || undefined}
-            aria-label={t("model_video")}
-          />
+          {options.videoBackends.length > 0 ? (
+            <ProviderModelSelect
+              value={value.videoBackend}
+              options={options.videoBackends}
+              providerNames={options.providerNames}
+              onChange={handleVideoChange}
+              allowDefault
+              defaultLabel={t("use_global_default")}
+              defaultHint={
+                globalDefaults.video
+                  ? t("current_global_default", { value: globalDefaults.video })
+                  : undefined
+              }
+              fallbackValue={globalDefaults.video || undefined}
+              aria-label={t("model_video")}
+            />
+          ) : (
+            <UnavailableModelHint>{t("no_video_models_hint")}</UnavailableModelHint>
+          )}
 
           {renderResolutionField(effectiveVideoBackend, value.videoResolution, (v) =>
             onChange({ ...value, videoResolution: v }),
@@ -208,21 +220,25 @@ export function ModelConfigSection({
       {showImage && (
         <div className="rounded-xl border border-gray-800 bg-gray-950/40 p-4">
           <div className="mb-3 text-sm font-medium text-gray-100">{t("model_image")}</div>
-          <ProviderModelSelect
-            value={value.imageBackend}
-            options={options.imageBackends}
-            providerNames={options.providerNames}
-            onChange={(next) => onChange({ ...value, imageBackend: next, imageResolution: null })}
-            allowDefault
-            defaultLabel={t("use_global_default")}
-            defaultHint={
-              globalDefaults.image
-                ? t("current_global_default", { value: globalDefaults.image })
-                : undefined
-            }
-            fallbackValue={globalDefaults.image || undefined}
-            aria-label={t("model_image")}
-          />
+          {options.imageBackends.length > 0 ? (
+            <ProviderModelSelect
+              value={value.imageBackend}
+              options={options.imageBackends}
+              providerNames={options.providerNames}
+              onChange={(next) => onChange({ ...value, imageBackend: next, imageResolution: null })}
+              allowDefault
+              defaultLabel={t("use_global_default")}
+              defaultHint={
+                globalDefaults.image
+                  ? t("current_global_default", { value: globalDefaults.image })
+                  : undefined
+              }
+              fallbackValue={globalDefaults.image || undefined}
+              aria-label={t("model_image")}
+            />
+          ) : (
+            <UnavailableModelHint>{t("no_image_models_hint")}</UnavailableModelHint>
+          )}
 
           {renderResolutionField(
             value.imageBackend || globalDefaults.image || "",
@@ -236,65 +252,71 @@ export function ModelConfigSection({
       {showText && (
         <div className="rounded-xl border border-gray-800 bg-gray-950/40 p-4">
           <div className="space-y-3">
-            {/* Script */}
-            <div>
-              <div className="mb-1 text-xs text-gray-400">{t("model_text_script")}</div>
-              <ProviderModelSelect
-                value={value.textBackendScript}
-                options={options.textBackends}
-                providerNames={options.providerNames}
-                onChange={(next) => onChange({ ...value, textBackendScript: next })}
-                allowDefault
-                defaultLabel={t("use_global_default")}
-                defaultHint={
-                  globalDefaults.textScript
-                    ? t("current_global_default", { value: globalDefaults.textScript })
-                    : undefined
-                }
-                fallbackValue={globalDefaults.textScript || undefined}
-                aria-label={t("model_text_script")}
-              />
-            </div>
+            {options.textBackends.length > 0 ? (
+              <>
+                {/* Script */}
+                <div>
+                  <div className="mb-1 text-xs text-gray-400">{t("model_text_script")}</div>
+                  <ProviderModelSelect
+                    value={value.textBackendScript}
+                    options={options.textBackends}
+                    providerNames={options.providerNames}
+                    onChange={(next) => onChange({ ...value, textBackendScript: next })}
+                    allowDefault
+                    defaultLabel={t("use_global_default")}
+                    defaultHint={
+                      globalDefaults.textScript
+                        ? t("current_global_default", { value: globalDefaults.textScript })
+                        : undefined
+                    }
+                    fallbackValue={globalDefaults.textScript || undefined}
+                    aria-label={t("model_text_script")}
+                  />
+                </div>
 
-            {/* Overview */}
-            <div>
-              <div className="mb-1 text-xs text-gray-400">{t("model_text_overview")}</div>
-              <ProviderModelSelect
-                value={value.textBackendOverview}
-                options={options.textBackends}
-                providerNames={options.providerNames}
-                onChange={(next) => onChange({ ...value, textBackendOverview: next })}
-                allowDefault
-                defaultLabel={t("use_global_default")}
-                defaultHint={
-                  globalDefaults.textOverview
-                    ? t("current_global_default", { value: globalDefaults.textOverview })
-                    : undefined
-                }
-                fallbackValue={globalDefaults.textOverview || undefined}
-                aria-label={t("model_text_overview")}
-              />
-            </div>
+                {/* Overview */}
+                <div>
+                  <div className="mb-1 text-xs text-gray-400">{t("model_text_overview")}</div>
+                  <ProviderModelSelect
+                    value={value.textBackendOverview}
+                    options={options.textBackends}
+                    providerNames={options.providerNames}
+                    onChange={(next) => onChange({ ...value, textBackendOverview: next })}
+                    allowDefault
+                    defaultLabel={t("use_global_default")}
+                    defaultHint={
+                      globalDefaults.textOverview
+                        ? t("current_global_default", { value: globalDefaults.textOverview })
+                        : undefined
+                    }
+                    fallbackValue={globalDefaults.textOverview || undefined}
+                    aria-label={t("model_text_overview")}
+                  />
+                </div>
 
-            {/* Style */}
-            <div>
-              <div className="mb-1 text-xs text-gray-400">{t("model_text_style")}</div>
-              <ProviderModelSelect
-                value={value.textBackendStyle}
-                options={options.textBackends}
-                providerNames={options.providerNames}
-                onChange={(next) => onChange({ ...value, textBackendStyle: next })}
-                allowDefault
-                defaultLabel={t("use_global_default")}
-                defaultHint={
-                  globalDefaults.textStyle
-                    ? t("current_global_default", { value: globalDefaults.textStyle })
-                    : undefined
-                }
-                fallbackValue={globalDefaults.textStyle || undefined}
-                aria-label={t("model_text_style")}
-              />
-            </div>
+                {/* Style */}
+                <div>
+                  <div className="mb-1 text-xs text-gray-400">{t("model_text_style")}</div>
+                  <ProviderModelSelect
+                    value={value.textBackendStyle}
+                    options={options.textBackends}
+                    providerNames={options.providerNames}
+                    onChange={(next) => onChange({ ...value, textBackendStyle: next })}
+                    allowDefault
+                    defaultLabel={t("use_global_default")}
+                    defaultHint={
+                      globalDefaults.textStyle
+                        ? t("current_global_default", { value: globalDefaults.textStyle })
+                        : undefined
+                    }
+                    fallbackValue={globalDefaults.textStyle || undefined}
+                    aria-label={t("model_text_style")}
+                  />
+                </div>
+              </>
+            ) : (
+              <UnavailableModelHint>{t("no_text_models_hint")}</UnavailableModelHint>
+            )}
           </div>
         </div>
       )}

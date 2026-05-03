@@ -10,7 +10,7 @@ import {
 export interface StylePickerValue {
   mode: "template" | "custom";
   templateId: string | null;
-  activeCategory: "live" | "anim";
+  activeCategory: StyleCategory;
   uploadedFile: File | null;
   /** Either a blob: URL (just-uploaded) or a /api/v1/files/... URL (already saved). */
   uploadedPreview: string | null;
@@ -134,6 +134,7 @@ export function StylePicker({ value, onChange }: StylePickerProps) {
     ].join(" ");
 
   const isCustomActive = value.mode === "custom";
+  const isContentActive = value.mode === "template" && value.activeCategory === "content";
   const isLiveActive = value.mode === "template" && value.activeCategory === "live";
   const isAnimActive = value.mode === "template" && value.activeCategory === "anim";
   const templates = value.mode === "template" ? getTemplatesByCategory(value.activeCategory) : [];
@@ -143,6 +144,9 @@ export function StylePicker({ value, onChange }: StylePickerProps) {
       <div className="rounded-lg bg-gray-900 border border-gray-800 p-1 flex gap-1 w-fit">
         <button type="button" onClick={handleCustomTab} className={tabCls(isCustomActive)}>
           {t("templates:category.custom")}
+        </button>
+        <button type="button" onClick={() => handleCategoryTab("content")} className={tabCls(isContentActive)}>
+          {t("templates:category.content")}
         </button>
         <button type="button" onClick={() => handleCategoryTab("live")} className={tabCls(isLiveActive)}>
           {t("templates:category.live")}

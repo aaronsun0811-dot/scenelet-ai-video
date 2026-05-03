@@ -14,9 +14,11 @@ class TestPromptBuilders:
             "黑发，冷静神态。",
             style="古风",
             style_description="Cinematic, low-key lighting",
+            character_style_prompt="五官清晰自然，真人短剧质感",
         )
         assert "Visual style: Cinematic, low-key lighting" in prompt
         assert "角色设计参考图，古风" in prompt
+        assert "角色设定图风格要求：五官清晰自然，真人短剧质感" in prompt
         assert "姜月茴" in prompt
         assert "黑发，冷静神态。" in prompt
 

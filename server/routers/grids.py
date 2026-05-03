@@ -20,9 +20,16 @@ from lib.grid.layout import calculate_grid_layout
 from lib.grid.models import GridGeneration
 from lib.grid.prompt_builder import build_grid_prompt
 from lib.grid_manager import GridManager
+from lib.i18n import Translator
 from lib.project_manager import ProjectManager
 from lib.storyboard_sequence import get_storyboard_items, group_scenes_by_segment_break
 from server.auth import CurrentUser
+from server.services.billing import (
+    ensure_platform_credits_balance,
+    estimate_generation_task_credits,
+    reserve_platform_credits_for_task_or_cancel,
+)
+from server.services.project_access import load_project_for_user, project_manager_for_user
 
 router = APIRouter(prefix="/projects/{project_name}", tags=["grids"])
 
@@ -32,6 +39,10 @@ pm = ProjectManager(PROJECT_ROOT / "projects")
 
 def get_project_manager() -> ProjectManager:
     return pm
+
+
+def get_project_manager_for_user(user_id: str | None) -> ProjectManager:
+    return project_manager_for_user(get_project_manager(), user_id)
 
 
 def _build_grid_task_payload(
@@ -60,6 +71,12 @@ def _build_grid_task_payload(
     }
 
 
+def _mark_grid_failed(gm: GridManager, grid: GridGeneration, message: str) -> None:
+    grid.status = "failed"
+    grid.error_message = message
+    gm.save(grid)
+
+
 # ==================== 请求/响应模型 ====================
 
 
@@ -84,6 +101,7 @@ async def generate_grid(
     episode: int,
     req: GenerateGridRequest,
     _user: CurrentUser,
+    _t: Translator,
 ):
     """
     提交宫格图生成任务到队列，按分段分组，每组 N>=4 个场景生成一个宫格图。
@@ -91,11 +109,13 @@ async def generate_grid(
     立即返回 grid_ids 和 task_ids。生成由 GenerationWorker 异步执行。
     """
     try:
-        from server.routers.generate import _snapshot_image_backend
+        from server.routers.generate import _payload_with_model_rule_summary, _snapshot_image_backend
 
-        project = get_project_manager().load_project(project_name)
-        script = get_project_manager().load_script(project_name, req.script_file)
-        project_path = get_project_manager().get_project_path(project_name)
+        manager = get_project_manager_for_user(_user.id)
+        project = load_project_for_user(get_project_manager(), project_name, user_id=_user.id, translate=_t)
+        script = manager.load_script(project_name, req.script_file)
+        project_path = manager.get_project_path(project_name)
+        await ensure_platform_credits_balance(project, _user.id)
 
         items, id_field, _, _, _ = get_storyboard_items(script)
         aspect_ratio = project.get("aspect_ratio", "9:16")
@@ -145,7 +165,7 @@ async def generate_grid(
             else:
                 chunks.append(group)
 
-            backend_snapshot = _snapshot_image_backend(project_name)
+            backend_snapshot = _snapshot_image_backend(project_name, _user.id)
 
             for chunk in chunks:
                 chunk_ids = [item[id_field] for item in chunk]
@@ -175,28 +195,62 @@ async def generate_grid(
                 )
 
                 grid.prompt = prompt
-                gm.save(grid)
 
-                task = await queue.enqueue_task(
+                task_payload = _build_grid_task_payload(
+                    prompt=prompt,
+                    script_file=req.script_file,
+                    scene_ids=chunk_ids,
+                    grid_size=chunk_layout.grid_size,
+                    rows=chunk_layout.rows,
+                    cols=chunk_layout.cols,
+                    grid_aspect_ratio=chunk_layout.grid_aspect_ratio,
+                    video_aspect_ratio=aspect_ratio,
+                    backend_snapshot=backend_snapshot,
+                )
+                required_credits = await estimate_generation_task_credits(
+                    project,
+                    "grid",
+                    task_payload,
+                    user_id=_user.id,
                     project_name=project_name,
+                )
+                await ensure_platform_credits_balance(project, _user.id, required_credits=required_credits)
+                task_payload = await _payload_with_model_rule_summary(
+                    project,
+                    task_payload,
                     task_type="grid",
                     media_type="image",
-                    resource_id=grid.id,
-                    payload=_build_grid_task_payload(
-                        prompt=prompt,
-                        script_file=req.script_file,
-                        scene_ids=chunk_ids,
-                        grid_size=chunk_layout.grid_size,
-                        rows=chunk_layout.rows,
-                        cols=chunk_layout.cols,
-                        grid_aspect_ratio=chunk_layout.grid_aspect_ratio,
-                        video_aspect_ratio=aspect_ratio,
-                        backend_snapshot=backend_snapshot,
-                    ),
-                    script_file=req.script_file,
-                    source="webui",
                     user_id=_user.id,
                 )
+
+                gm.save(grid)
+                try:
+                    task = await queue.enqueue_task(
+                        project_name=project_name,
+                        task_type="grid",
+                        media_type="image",
+                        resource_id=grid.id,
+                        payload=task_payload,
+                        script_file=req.script_file,
+                        source="webui",
+                        user_id=_user.id,
+                    )
+                    if not task.get("deduped"):
+                        await reserve_platform_credits_for_task_or_cancel(
+                            project,
+                            _user.id,
+                            task_id=task["task_id"],
+                            required_credits=required_credits,
+                            task_type="grid",
+                            project_name=project_name,
+                            queue=queue,
+                        )
+                except HTTPException as e:
+                    _mark_grid_failed(gm, grid, str(e.detail))
+                    raise
+                except Exception as e:
+                    _mark_grid_failed(gm, grid, str(e))
+                    raise
                 grid_ids.append(grid.id)
                 task_ids.append(task["task_id"])
 
@@ -220,14 +274,18 @@ async def generate_grid(
 
 
 @router.get("/grids")
-async def list_grids(project_name: str, _user: CurrentUser):
+async def list_grids(project_name: str, _user: CurrentUser, _t: Translator):
     """列出项目下所有宫格图记录。"""
     try:
-        project_path = get_project_manager().get_project_path(project_name)
+        manager = get_project_manager_for_user(_user.id)
+        load_project_for_user(get_project_manager(), project_name, user_id=_user.id, translate=_t)
+        project_path = manager.get_project_path(project_name)
         gm = GridManager(project_path)
         return [g.to_dict() for g in gm.list_all()]
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("列出宫格图失败")
         raise HTTPException(status_code=500, detail=str(e))
@@ -237,10 +295,12 @@ async def list_grids(project_name: str, _user: CurrentUser):
 
 
 @router.get("/grids/{grid_id}")
-async def get_grid(project_name: str, grid_id: str, _user: CurrentUser):
+async def get_grid(project_name: str, grid_id: str, _user: CurrentUser, _t: Translator):
     """获取单个宫格图记录。"""
     try:
-        project_path = get_project_manager().get_project_path(project_name)
+        manager = get_project_manager_for_user(_user.id)
+        load_project_for_user(get_project_manager(), project_name, user_id=_user.id, translate=_t)
+        project_path = manager.get_project_path(project_name)
         gm = GridManager(project_path)
         grid = gm.get(grid_id)
         if grid is None:
@@ -259,48 +319,84 @@ async def get_grid(project_name: str, grid_id: str, _user: CurrentUser):
 
 
 @router.post("/grids/{grid_id}/regenerate")
-async def regenerate_grid(project_name: str, grid_id: str, _user: CurrentUser):
+async def regenerate_grid(project_name: str, grid_id: str, _user: CurrentUser, _t: Translator):
     """重置宫格图状态并重新入队生成任务。"""
     try:
-        from server.routers.generate import _snapshot_image_backend
+        from server.routers.generate import _payload_with_model_rule_summary, _snapshot_image_backend
 
-        project_path = get_project_manager().get_project_path(project_name)
+        manager = get_project_manager_for_user(_user.id)
+        project = load_project_for_user(get_project_manager(), project_name, user_id=_user.id, translate=_t)
+        project_path = manager.get_project_path(project_name)
         gm = GridManager(project_path)
         grid = gm.get(grid_id)
         if grid is None:
             raise HTTPException(status_code=404, detail=f"Grid {grid_id} 不存在")
 
-        grid.status = "pending"
-        grid.error_message = None
-        gm.save(grid)
-
-        project = get_project_manager().load_project(project_name)
+        await ensure_platform_credits_balance(project, _user.id)
+        previous_status = grid.status
+        previous_error_message = grid.error_message
         aspect_ratio = project.get("aspect_ratio", "9:16")
         layout = calculate_grid_layout(len(grid.scene_ids), aspect_ratio)
         grid_aspect_ratio = layout.grid_aspect_ratio if layout else aspect_ratio
 
-        backend_snapshot = _snapshot_image_backend(project_name)
+        backend_snapshot = _snapshot_image_backend(project_name, _user.id)
         queue = get_generation_queue()
-        task = await queue.enqueue_task(
+        task_payload = _build_grid_task_payload(
+            prompt=grid.prompt,
+            script_file=grid.script_file,
+            scene_ids=grid.scene_ids,
+            grid_size=grid.grid_size,
+            rows=grid.rows,
+            cols=grid.cols,
+            grid_aspect_ratio=grid_aspect_ratio,
+            video_aspect_ratio=aspect_ratio,
+            backend_snapshot=backend_snapshot,
+        )
+        required_credits = await estimate_generation_task_credits(
+            project,
+            "grid",
+            task_payload,
+            user_id=_user.id,
             project_name=project_name,
+        )
+        await ensure_platform_credits_balance(project, _user.id, required_credits=required_credits)
+        task_payload = await _payload_with_model_rule_summary(
+            project,
+            task_payload,
             task_type="grid",
             media_type="image",
-            resource_id=grid.id,
-            payload=_build_grid_task_payload(
-                prompt=grid.prompt,
-                script_file=grid.script_file,
-                scene_ids=grid.scene_ids,
-                grid_size=grid.grid_size,
-                rows=grid.rows,
-                cols=grid.cols,
-                grid_aspect_ratio=grid_aspect_ratio,
-                video_aspect_ratio=aspect_ratio,
-                backend_snapshot=backend_snapshot,
-            ),
-            script_file=grid.script_file,
-            source="webui",
             user_id=_user.id,
         )
+
+        grid.status = "pending"
+        grid.error_message = None
+        gm.save(grid)
+        try:
+            task = await queue.enqueue_task(
+                project_name=project_name,
+                task_type="grid",
+                media_type="image",
+                resource_id=grid.id,
+                payload=task_payload,
+                script_file=grid.script_file,
+                source="webui",
+                user_id=_user.id,
+            )
+            if not task.get("deduped"):
+                await reserve_platform_credits_for_task_or_cancel(
+                    project,
+                    _user.id,
+                    task_id=task["task_id"],
+                    required_credits=required_credits,
+                    task_type="grid",
+                    project_name=project_name,
+                    queue=queue,
+                )
+        except Exception:
+            grid.status = previous_status
+            grid.error_message = previous_error_message
+            gm.save(grid)
+            raise
 
         return {"success": True, "task_id": task["task_id"]}
 

@@ -16,6 +16,7 @@ from lib.config.service import ConfigService, ProviderStatus
 from lib.db import get_async_session
 from lib.db.repositories.credential_repository import CredentialRepository
 from lib.i18n import get_translator
+from server.auth import CurrentUserInfo, get_current_user
 from server.dependencies import get_config_service
 from server.routers import providers
 from tests.conftest import make_translator
@@ -31,6 +32,7 @@ def _make_app(mock_svc: ConfigService) -> FastAPI:
 
     # 覆盖 get_config_service，直接注入 mock 服务
     app.dependency_overrides[get_config_service] = lambda: mock_svc
+    app.dependency_overrides[get_current_user] = lambda: CurrentUserInfo(id="test", sub="test", role="admin")
 
     app.include_router(providers.router, prefix="/api/v1")
     return app
@@ -187,6 +189,7 @@ def _make_session_app() -> tuple[FastAPI, AsyncMock]:
 
     app.dependency_overrides[get_async_session] = _override_session
     app.dependency_overrides[get_translator] = lambda: make_translator()
+    app.dependency_overrides[get_current_user] = lambda: CurrentUserInfo(id="test", sub="test", role="admin")
     app.include_router(providers.router, prefix="/api/v1")
     return app, mock_session
 
@@ -339,6 +342,7 @@ class TestPatchProviderConfig:
                 yield mock_session
 
             app.dependency_overrides[get_async_session] = _override
+            app.dependency_overrides[get_current_user] = lambda: CurrentUserInfo(id="test", sub="test", role="admin")
             app.include_router(providers.router, prefix="/api/v1")
 
             with TestClient(app) as client:
@@ -357,6 +361,7 @@ class TestPatchProviderConfig:
             yield mock_session
 
         app.dependency_overrides[get_async_session] = _override
+        app.dependency_overrides[get_current_user] = lambda: CurrentUserInfo(id="test", sub="test", role="admin")
         app.include_router(providers.router, prefix="/api/v1")
 
         with TestClient(app) as client:
@@ -377,6 +382,7 @@ class TestPatchProviderConfig:
                 yield mock_session
 
             app.dependency_overrides[get_async_session] = _override
+            app.dependency_overrides[get_current_user] = lambda: CurrentUserInfo(id="test", sub="test", role="admin")
             app.include_router(providers.router, prefix="/api/v1")
 
             with TestClient(app) as client:
@@ -399,6 +405,7 @@ class TestPatchProviderConfig:
                 yield mock_session
 
             app.dependency_overrides[get_async_session] = _override
+            app.dependency_overrides[get_current_user] = lambda: CurrentUserInfo(id="test", sub="test", role="admin")
             app.include_router(providers.router, prefix="/api/v1")
 
             with TestClient(app) as client:
@@ -526,6 +533,27 @@ class TestTestProviderConnection:
         assert body["success"] is False
         assert "API key invalid" in body["message"]
 
+    def test_auth_connection_failure_returns_actionable_message(self):
+        class FakeAuthError(Exception):
+            status_code = 401
+            code = "invalid_api_key"
+
+        def _failing_fn(config: dict, _t=None) -> providers.ConnectionTestResponse:
+            raise FakeAuthError("Authentication Fails, Your api key is invalid")
+
+        app, _ = _make_session_app()
+        with (
+            patch("server.routers.providers.CredentialRepository", return_value=self._mock_cred_repo_configured()),
+            patch("server.routers.providers.ConfigService", return_value=self._mock_svc()),
+            patch.dict(providers._TEST_DISPATCH, {"deepseek": _failing_fn}),
+        ):
+            with TestClient(app) as client:
+                resp = client.post("/api/v1/providers/deepseek/test", json={"api_key": "sk-invalid"})
+        body = resp.json()
+        assert body["success"] is False
+        assert "API Key 校验失败" in body["message"]
+        assert "Authentication Fails" not in body["message"]
+
     def test_specific_credential_id(self):
         """使用 credential_id 参数测试特定凭证。"""
         repo = MagicMock(spec=CredentialRepository)
@@ -543,3 +571,106 @@ class TestTestProviderConnection:
                 resp = client.post("/api/v1/providers/gemini-aistudio/test?credential_id=1")
         assert resp.status_code == 200
         assert resp.json()["success"] is True
+
+    def test_draft_credential_body_tests_without_saved_credential(self):
+        """未保存的 api_key/base_url 草稿也可以直接测试。"""
+        repo = MagicMock(spec=CredentialRepository)
+        repo.get_active = AsyncMock(return_value=None)
+        repo.get_by_id = AsyncMock(return_value=None)
+
+        def _asserting_fn(config: dict, _t=None) -> providers.ConnectionTestResponse:
+            assert config["api_key"] == "sk-draft"
+            assert config["base_url"] == "https://api.deepseek.com/"
+            return providers.ConnectionTestResponse(
+                success=True,
+                available_models=["deepseek-chat"],
+                message="连接成功",
+            )
+
+        app, _ = _make_session_app()
+        with (
+            patch("server.routers.providers.CredentialRepository", return_value=repo),
+            patch("server.routers.providers.ConfigService", return_value=self._mock_svc()),
+            patch.dict(providers._TEST_DISPATCH, {"deepseek": _asserting_fn}),
+        ):
+            with TestClient(app) as client:
+                resp = client.post(
+                    "/api/v1/providers/deepseek/test",
+                    json={"api_key": " sk-draft ", "base_url": " https://api.deepseek.com/ "},
+                )
+        assert resp.status_code == 200
+        assert resp.json()["available_models"] == ["deepseek-chat"]
+        repo.get_active.assert_not_awaited()
+
+    def test_draft_credential_uses_builtin_base_url_default(self):
+        """未填 Base URL 时，明确的 OpenAI 兼容内置供应商使用保守默认地址。"""
+        repo = MagicMock(spec=CredentialRepository)
+        repo.get_active = AsyncMock(return_value=None)
+        repo.get_by_id = AsyncMock(return_value=None)
+
+        def _asserting_fn(config: dict, _t=None) -> providers.ConnectionTestResponse:
+            assert config["api_key"] == "sk-draft"
+            assert config["base_url"] == "https://api.deepseek.com/"
+            return providers.ConnectionTestResponse(
+                success=True,
+                available_models=["deepseek-chat"],
+                message="连接成功",
+            )
+
+        app, _ = _make_session_app()
+        with (
+            patch("server.routers.providers.CredentialRepository", return_value=repo),
+            patch("server.routers.providers.ConfigService", return_value=self._mock_svc()),
+            patch.dict(providers._TEST_DISPATCH, {"deepseek": _asserting_fn}),
+        ):
+            with TestClient(app) as client:
+                resp = client.post("/api/v1/providers/deepseek/test", json={"api_key": "sk-draft"})
+        assert resp.status_code == 200
+        repo.get_active.assert_not_awaited()
+
+    def test_saved_credential_uses_builtin_base_url_default(self):
+        """旧凭证未保存 Base URL 时，连接测试仍应补上内置供应商默认地址。"""
+        repo = MagicMock(spec=CredentialRepository)
+        cred = MagicMock()
+        cred.provider = "deepseek"
+        cred.overlay_config.side_effect = lambda config: config.update({"api_key": "sk-old"})
+        repo.get_by_id = AsyncMock(return_value=cred)
+        repo.get_active = AsyncMock(return_value=None)
+
+        def _asserting_fn(config: dict, _t=None) -> providers.ConnectionTestResponse:
+            assert config["api_key"] == "sk-old"
+            assert config["base_url"] == "https://api.deepseek.com/"
+            return providers.ConnectionTestResponse(
+                success=True,
+                available_models=["deepseek-chat"],
+                message="连接成功",
+            )
+
+        app, _ = _make_session_app()
+        with (
+            patch("server.routers.providers.CredentialRepository", return_value=repo),
+            patch("server.routers.providers.ConfigService", return_value=self._mock_svc()),
+            patch.dict(providers._TEST_DISPATCH, {"deepseek": _asserting_fn}),
+        ):
+            with TestClient(app) as client:
+                resp = client.post("/api/v1/providers/deepseek/test?credential_id=1")
+        assert resp.status_code == 200
+        assert resp.json()["available_models"] == ["deepseek-chat"]
+
+    def test_openai_compatible_test_filters_provider_models(self):
+        """DeepSeek 等兼容接口连接测试应展示对应供应商模型，而不是只认 GPT。"""
+        fake_client = MagicMock()
+        fake_client.models.list.return_value.data = [
+            MagicMock(id="deepseek-chat"),
+            MagicMock(id="deepseek-reasoner"),
+            MagicMock(id="gpt-4o"),
+        ]
+
+        with patch("openai.OpenAI", return_value=fake_client):
+            result = providers._test_openai(
+                {"api_key": "sk-test", "base_url": "https://api.deepseek.com/", "_provider_id": "deepseek"},
+                lambda key, **kwargs: "连接成功",
+            )
+
+        assert result.success is True
+        assert result.available_models == ["deepseek-chat", "deepseek-reasoner"]

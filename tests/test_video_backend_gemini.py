@@ -1,5 +1,6 @@
 """GeminiVideoBackend 单元测试 — mock genai SDK。"""
 
+import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -20,11 +21,19 @@ def mock_rate_limiter():
 
 
 @pytest.fixture
-def backend(mock_rate_limiter):
-    """创建 aistudio 模式的 GeminiVideoBackend（mock genai SDK）。"""
-    with patch("google.genai"), patch("google.genai.types"):
-        from lib.video_backends.gemini import GeminiVideoBackend
+def mock_genai_sdk():
+    mock_genai = MagicMock()
+    mock_types = MagicMock()
+    mock_genai.Client.return_value = MagicMock()
+    return mock_genai, mock_types
 
+
+@pytest.fixture
+def backend(mock_rate_limiter, mock_genai_sdk):
+    """创建 aistudio 模式的 GeminiVideoBackend（mock genai SDK）。"""
+    from lib.video_backends.gemini import GeminiVideoBackend
+
+    with patch("lib.video_backends.gemini._load_google_genai", return_value=mock_genai_sdk):
         b = GeminiVideoBackend(
             backend_type="aistudio",
             api_key="test-key",
@@ -50,19 +59,29 @@ class TestGeminiVideoBackendProperties:
         assert VideoCapability.VIDEO_EXTEND in caps
         assert VideoCapability.GENERATE_AUDIO not in caps
 
-    def test_capabilities_vertex(self, mock_rate_limiter, tmp_path):
+    def test_capabilities_vertex(self, mock_rate_limiter, mock_genai_sdk, tmp_path):
         # 准备 mock vertex 凭证文件
         creds_file = tmp_path / "vertex_credentials.json"
         creds_file.write_text('{"project_id": "test-project"}')
+        oauth2_mod = types.ModuleType("google.oauth2")
+        service_account_mod = types.ModuleType("google.oauth2.service_account")
+        service_account_mod.Credentials = MagicMock()
+        service_account_mod.Credentials.from_service_account_file.return_value = MagicMock()
+        oauth2_mod.service_account = service_account_mod
 
         with (
-            patch("google.genai"),
-            patch("google.genai.types"),
+            patch("lib.video_backends.gemini._load_google_genai", return_value=mock_genai_sdk),
             patch(
                 "lib.video_backends.gemini.resolve_vertex_credentials_path",
                 return_value=creds_file,
             ),
-            patch("google.oauth2.service_account.Credentials.from_service_account_file"),
+            patch.dict(
+                "sys.modules",
+                {
+                    "google.oauth2": oauth2_mod,
+                    "google.oauth2.service_account": service_account_mod,
+                },
+            ),
         ):
             from lib.video_backends.gemini import GeminiVideoBackend
 

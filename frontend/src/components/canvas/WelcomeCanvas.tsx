@@ -1,8 +1,8 @@
 
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, type ReactNode } from "react";
 import { errMsg, voidCall, voidPromise } from "@/utils/async";
 import { useTranslation } from "react-i18next";
-import { Upload, FileText, Sparkles, Loader2, CheckCircle2, Plus } from "lucide-react";
+import { Upload, FileText, Sparkles, Loader2, CheckCircle2, Plus, PlayCircle, X } from "lucide-react";
 import { API } from "@/api";
 import { useAppStore } from "@/stores/app-store";
 
@@ -17,6 +17,11 @@ interface WelcomeCanvasProps {
   projectTitle?: string;
   onUpload?: (file: File) => Promise<void>;
   onAnalyze?: () => Promise<void>;
+  quickStartActive?: boolean;
+  quickStartRunning?: boolean;
+  quickStartProgress?: ReactNode;
+  onQuickStart?: () => Promise<boolean | void>;
+  onDismissQuickStart?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -32,6 +37,11 @@ export function WelcomeCanvas({
   projectTitle,
   onUpload,
   onAnalyze,
+  quickStartActive = false,
+  quickStartRunning = false,
+  quickStartProgress,
+  onQuickStart,
+  onDismissQuickStart,
 }: WelcomeCanvasProps) {
   const { t } = useTranslation("dashboard");
   const [isDragging, setIsDragging] = useState(false);
@@ -90,14 +100,19 @@ export function WelcomeCanvas({
       // 冲突时还会改名。触发 invalidate 让 useEffect 用服务端真实列表回填。
       useAppStore.getState().invalidateSourceFiles();
 
-      if (wasIdle && onAnalyze) {
-        // 首次上传：自动触发分析，跳过 has_sources 等待手动点击
+      const afterUpload = quickStartActive && onQuickStart ? onQuickStart : onAnalyze;
+      if (wasIdle && afterUpload) {
+        // 首次上传：自动触发分析/引导链路，跳过 has_sources 等待手动点击
         setPhase("analyzing");
         try {
-          await onAnalyze();
-          setPhase("done");
+          const ok = await afterUpload();
+          setPhase(ok === false ? "has_sources" : "done");
         } catch (err) {
-          setError(t("analysis_failed", { message: errMsg(err) }));
+          setError(
+            quickStartActive
+              ? t("workflow_quickstart_failed", { message: errMsg(err) })
+              : t("analysis_failed", { message: errMsg(err) }),
+          );
           setPhase("has_sources");
         }
         return;
@@ -105,7 +120,7 @@ export function WelcomeCanvas({
 
       setPhase("has_sources");
     },
-    [onUpload, onAnalyze, sourceFiles.length, t],
+    [onUpload, onAnalyze, onQuickStart, quickStartActive, sourceFiles.length, t],
   );
 
   const startAnalysis = useCallback(async () => {
@@ -120,6 +135,19 @@ export function WelcomeCanvas({
       setPhase("has_sources");
     }
   }, [onAnalyze, t]);
+
+  const startQuickStart = useCallback(async () => {
+    if (!onQuickStart || quickStartRunning) return;
+    setError(null);
+    setPhase("analyzing");
+    try {
+      const ok = await onQuickStart();
+      setPhase(ok === false ? "has_sources" : "done");
+    } catch (err) {
+      setError(t("workflow_quickstart_failed", { message: errMsg(err) }));
+      setPhase("has_sources");
+    }
+  }, [onQuickStart, quickStartRunning, t]);
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
@@ -164,46 +192,113 @@ export function WelcomeCanvas({
             {phase === "idle" && t("welcome_idle_desc")}
             {phase === "has_sources" && t("welcome_has_sources_desc")}
             {phase === "uploading" && t("uploading_file", { name: fileName })}
-            {phase === "analyzing" && t("analyzing_content_desc")}
+            {phase === "analyzing" && (
+              quickStartActive ? t("workflow_quickstart_running_desc") : t("analyzing_content_desc")
+            )}
             {phase === "done" && t("analysis_complete_loading")}
           </p>
         </div>
 
         {/* ---- IDLE: No source files, show upload zone ---- */}
         {phase === "idle" && (
-          <button
-            type="button"
-            onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
-            onDragLeave={() => setIsDragging(false)}
-            onDrop={handleDrop}
-            onClick={() => fileInputRef.current?.click()}
-            className={`w-full cursor-pointer rounded-xl border-2 border-dashed p-12 transition-colors text-center ${
-              isDragging
-                ? "border-indigo-500 bg-indigo-500/10"
-                : "border-gray-700 hover:border-gray-600 hover:bg-gray-900/50"
-            }`}
-          >
-            <Upload
-              className={`mx-auto h-8 w-8 ${isDragging ? "text-indigo-400" : "text-gray-500"}`}
-            />
-            <p className="mt-3 text-sm text-gray-300">{t("drop_files_here")}</p>
-            <p className="mt-1 text-xs text-gray-500">
-              {t("click_to_select_files")}
-            </p>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".txt,.md,.docx,.epub,.pdf"
-              aria-label={t("upload_script_file_aria")}
-              className="hidden"
-              onChange={handleFileSelect}
-            />
-          </button>
+          <div className="space-y-4">
+            {quickStartActive && (
+              <div className="rounded-xl border border-indigo-400/25 bg-indigo-500/10 p-4 text-left">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-indigo-100">{t("workflow_quickstart_title")}</p>
+                    <p className="mt-1 text-xs leading-5 text-indigo-100/75">
+                      {t("workflow_quickstart_upload_hint")}
+                    </p>
+                  </div>
+                  {onDismissQuickStart && (
+                    <button
+                      type="button"
+                      onClick={onDismissQuickStart}
+                      className="rounded-md p-1 text-indigo-100/60 transition-colors hover:bg-indigo-500/15 hover:text-indigo-50"
+                      aria-label={t("workflow_quickstart_dismiss")}
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  )}
+                </div>
+                {quickStartProgress && (
+                  <div className="mt-3">{quickStartProgress}</div>
+                )}
+              </div>
+            )}
+            <button
+              type="button"
+              onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+              onDragLeave={() => setIsDragging(false)}
+              onDrop={handleDrop}
+              onClick={() => fileInputRef.current?.click()}
+              className={`w-full cursor-pointer rounded-xl border-2 border-dashed p-12 transition-colors text-center ${
+                isDragging
+                  ? "border-indigo-500 bg-indigo-500/10"
+                  : "border-gray-700 hover:border-gray-600 hover:bg-gray-900/50"
+              }`}
+            >
+              <Upload
+                className={`mx-auto h-8 w-8 ${isDragging ? "text-indigo-400" : "text-gray-500"}`}
+              />
+              <p className="mt-3 text-sm text-gray-300">{t("drop_files_here")}</p>
+              <p className="mt-1 text-xs text-gray-500">
+                {t("click_to_select_files")}
+              </p>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".txt,.md,.docx,.epub,.pdf"
+                aria-label={t("upload_script_file_aria")}
+                className="hidden"
+                onChange={handleFileSelect}
+              />
+            </button>
+          </div>
         )}
 
         {/* ---- HAS_SOURCES: Source files exist, show list + analyze button ---- */}
         {phase === "has_sources" && (
           <div className="space-y-4">
+            {quickStartActive && (
+              <div className="rounded-xl border border-indigo-400/25 bg-indigo-500/10 p-4 text-left">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-indigo-100">{t("workflow_quickstart_title")}</p>
+                    <p className="mt-1 text-xs leading-5 text-indigo-100/75">
+                      {t("workflow_quickstart_has_sources_desc")}
+                    </p>
+                  </div>
+                  {onDismissQuickStart && (
+                    <button
+                      type="button"
+                      onClick={onDismissQuickStart}
+                      className="rounded-md p-1 text-indigo-100/60 transition-colors hover:bg-indigo-500/15 hover:text-indigo-50"
+                      aria-label={t("workflow_quickstart_dismiss")}
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  )}
+                </div>
+                {quickStartProgress && (
+                  <div className="mt-3">{quickStartProgress}</div>
+                )}
+                <button
+                  type="button"
+                  onClick={voidPromise(startQuickStart)}
+                  disabled={quickStartRunning}
+                  className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {quickStartRunning ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <PlayCircle className="h-4 w-4" />
+                  )}
+                  {quickStartRunning ? t("workflow_quickstart_running") : t("workflow_quickstart_button")}
+                </button>
+              </div>
+            )}
             {/* Source file list */}
             <div className="rounded-xl border border-gray-800 bg-gray-900 p-4 text-left">
               <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
@@ -255,7 +350,11 @@ export function WelcomeCanvas({
             <button
               type="button"
               onClick={voidPromise(startAnalysis)}
-              className="w-full rounded-xl bg-indigo-600 px-6 py-3 text-sm font-medium text-white hover:bg-indigo-500 transition-colors"
+              className={`w-full rounded-xl px-6 py-3 text-sm font-medium transition-colors ${
+                quickStartActive
+                  ? "border border-gray-700 text-gray-300 hover:bg-gray-800 hover:text-white"
+                  : "bg-indigo-600 text-white hover:bg-indigo-500"
+              }`}
             >
               <Sparkles className="inline-block h-4 w-4 mr-2 -mt-0.5" />
               {t("start_ai_analysis")}
@@ -277,7 +376,12 @@ export function WelcomeCanvas({
           <div className="rounded-xl border border-indigo-500/30 bg-indigo-500/5 p-12">
             <Sparkles className="mx-auto h-10 w-10 text-indigo-400 animate-pulse" />
             <p className="mt-3 text-sm text-indigo-300 font-medium">{t("ai_analyzing")}</p>
-            <p className="mt-1 text-xs text-gray-400">{t("extracting_metadata_desc")}</p>
+            <p className="mt-1 text-xs text-gray-400">
+              {quickStartActive ? t("workflow_quickstart_running_desc") : t("extracting_metadata_desc")}
+            </p>
+            {quickStartActive && quickStartProgress && (
+              <div className="mt-5 text-left">{quickStartProgress}</div>
+            )}
             <div className="mt-4 mx-auto w-48 h-1 rounded-full bg-gray-800 overflow-hidden">
               <div className="h-full rounded-full bg-indigo-600 animate-progress" />
             </div>

@@ -8,6 +8,7 @@ import asyncio
 import logging
 import shutil
 import tempfile
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 
@@ -31,7 +32,8 @@ from lib.source_loader import (
     SourceLoader,
     UnsupportedFormatError,
 )
-from server.auth import CurrentUser
+from server.auth import CurrentUser, CurrentUserFlexible
+from server.services.project_access import load_project_for_user, project_manager_for_user
 
 router = APIRouter()
 
@@ -43,6 +45,52 @@ def get_project_manager() -> ProjectManager:
     return pm
 
 
+def get_project_manager_for_user(user_id: str | None) -> ProjectManager:
+    return project_manager_for_user(get_project_manager(), user_id)
+
+
+def _ensure_project_access(project_name: str, user_id: str, _t: Translator) -> dict:
+    return load_project_for_user(get_project_manager(), project_name, user_id=user_id, translate=_t)
+
+
+def _source_file_path(project_dir: Path, filename: str, _t: Translator) -> Path:
+    """Resolve a single source filename, bounded to the project's source dir."""
+    if not filename or "/" in filename or "\\" in filename:
+        raise HTTPException(status_code=403, detail=_t("forbidden_access"))
+    source_dir = project_dir / "source"
+    candidate = (source_dir / filename).resolve(strict=False)
+    try:
+        candidate.relative_to(source_dir.resolve(strict=False))
+    except ValueError:
+        raise HTTPException(status_code=403, detail=_t("forbidden_access"))
+    return candidate
+
+
+def _safe_upload_stem(value: str | None, _t: Translator, *, basename: bool = False) -> str:
+    """Return a safe filename stem for project uploads."""
+    raw = str(value or "").strip()
+    if not basename and ("/" in raw or "\\" in raw or "\0" in raw):
+        raise HTTPException(status_code=400, detail=_t("invalid_asset_filename"))
+    raw = raw.replace("\\", "/")
+    if basename:
+        raw = Path(raw).name
+    stem = Path(raw).stem.strip()
+    if not stem or stem in {".", ".."} or "/" in stem or "\\" in stem or "\0" in stem:
+        raise HTTPException(status_code=400, detail=_t("invalid_asset_filename"))
+    return stem
+
+
+def _safe_upload_target(target_dir: Path, filename: str, _t: Translator) -> Path:
+    """Resolve an upload destination and keep it bounded to target_dir."""
+    target_root = target_dir.resolve(strict=False)
+    target_path = (target_dir / filename).resolve(strict=False)
+    try:
+        target_path.relative_to(target_root)
+    except ValueError:
+        raise HTTPException(status_code=403, detail=_t("forbidden_access"))
+    return target_path
+
+
 # 允许的文件类型
 ALLOWED_EXTENSIONS = {
     "source": [".txt", ".md", ".docx", ".epub", ".pdf"],
@@ -51,16 +99,24 @@ ALLOWED_EXTENSIONS = {
     "scene": [".png", ".jpg", ".jpeg", ".webp"],
     "prop": [".png", ".jpg", ".jpeg", ".webp"],
     "storyboard": [".png", ".jpg", ".jpeg", ".webp"],
+    "travel_reference": [".png", ".jpg", ".jpeg", ".webp"],
 }
 
 
 @router.get("/files/{project_name}/{path:path}")
-async def serve_project_file(project_name: str, path: str, request: Request, _t: Translator):
+async def serve_project_file(
+    project_name: str,
+    path: str,
+    request: Request,
+    _user: CurrentUserFlexible,
+    _t: Translator,
+):
     """服务项目内的静态文件（图片/视频）"""
     try:
 
         def _sync():
-            project_dir = get_project_manager().get_project_path(project_name)
+            _ensure_project_access(project_name, _user.id, _t)
+            project_dir = get_project_manager_for_user(_user.id).get_project_path(project_name)
             file_path = project_dir / path
 
             if not file_path.exists():
@@ -146,6 +202,7 @@ async def upload_file(
             project_name=project_name,
             file=file,
             on_conflict=on_conflict,
+            user_id=_user.id,
             _t=_t,
         )
 
@@ -153,7 +210,9 @@ async def upload_file(
         content = await file.read()
 
         def _sync():
-            project_dir = get_project_manager().get_project_path(project_name)
+            manager = get_project_manager_for_user(_user.id)
+            _ensure_project_access(project_name, _user.id, _t)
+            project_dir = manager.get_project_path(project_name)
 
             # 确定目标目录
             if upload_type == "source":
@@ -163,34 +222,37 @@ async def upload_file(
                 target_dir = project_dir / "characters"
                 # 统一保存为 PNG，且使用稳定文件名（避免 jpg/png 不一致导致版本还原/引用异常）
                 if name:
-                    filename = f"{name}.png"
+                    filename = f"{_safe_upload_stem(name, _t)}.png"
                 else:
-                    filename = f"{Path(file.filename).stem}.png"
+                    filename = f"{_safe_upload_stem(file.filename, _t, basename=True)}.png"
             elif upload_type == "character_ref":
                 target_dir = project_dir / "characters" / "refs"
                 if name:
-                    filename = f"{name}.png"
+                    filename = f"{_safe_upload_stem(name, _t)}.png"
                 else:
-                    filename = f"{Path(file.filename).stem}.png"
+                    filename = f"{_safe_upload_stem(file.filename, _t, basename=True)}.png"
             elif upload_type == "scene":
                 target_dir = project_dir / "scenes"
                 if name:
-                    filename = f"{name}.png"
+                    filename = f"{_safe_upload_stem(name, _t)}.png"
                 else:
-                    filename = f"{Path(file.filename).stem}.png"
+                    filename = f"{_safe_upload_stem(file.filename, _t, basename=True)}.png"
             elif upload_type == "prop":
                 target_dir = project_dir / "props"
                 if name:
-                    filename = f"{name}.png"
+                    filename = f"{_safe_upload_stem(name, _t)}.png"
                 else:
-                    filename = f"{Path(file.filename).stem}.png"
+                    filename = f"{_safe_upload_stem(file.filename, _t, basename=True)}.png"
             elif upload_type == "storyboard":
                 # 注意：目录为 storyboards（复数），而不是 storyboard
                 target_dir = project_dir / "storyboards"
                 if name:
-                    filename = f"scene_{name}.png"
+                    filename = f"scene_{_safe_upload_stem(name, _t)}.png"
                 else:
-                    filename = f"{Path(file.filename).stem}.png"
+                    filename = f"{_safe_upload_stem(file.filename, _t, basename=True)}.png"
+            elif upload_type == "travel_reference":
+                target_dir = project_dir / "travel_references"
+                filename = f"{uuid.uuid4().hex}.png"
             else:
                 target_dir = project_dir / upload_type
                 filename = file.filename
@@ -199,14 +261,14 @@ async def upload_file(
 
             # 保存文件（大于 2MB 时压缩为 JPEG，否则校验后原样保存）
             nonlocal content
-            if upload_type in ("character", "character_ref", "scene", "prop", "storyboard"):
+            if upload_type in ("character", "character_ref", "scene", "prop", "storyboard", "travel_reference"):
                 try:
                     content, ext = normalize_uploaded_image(content, Path(file.filename).suffix.lower())
                 except ValueError:
                     raise HTTPException(status_code=400, detail=_t("invalid_image_file"))
                 filename = Path(filename).with_suffix(ext).name
 
-            target_path = target_dir / filename
+            target_path = _safe_upload_target(target_dir, filename, _t)
             with open(target_path, "wb") as f:
                 f.write(content)
 
@@ -223,31 +285,29 @@ async def upload_file(
                 relative_path = f"props/{filename}"
             elif upload_type == "storyboard":
                 relative_path = f"storyboards/{filename}"
+            elif upload_type == "travel_reference":
+                relative_path = f"travel_references/{filename}"
             else:
                 relative_path = f"{upload_type}/{filename}"
 
             if upload_type == "character" and name:
                 try:
                     with project_change_source("webui"):
-                        get_project_manager().update_project_character_sheet(
-                            project_name, name, f"characters/{filename}"
-                        )
+                        manager.update_project_character_sheet(project_name, name, f"characters/{filename}")
                 except KeyError:
                     pass  # 角色不存在，忽略
 
             if upload_type == "character_ref" and name:
                 try:
                     with project_change_source("webui"):
-                        get_project_manager().update_character_reference_image(
-                            project_name, name, f"characters/refs/{filename}"
-                        )
+                        manager.update_character_reference_image(project_name, name, f"characters/refs/{filename}")
                 except KeyError:
                     pass  # 角色不存在，忽略
 
             if upload_type == "scene" and name:
                 try:
                     with project_change_source("webui"):
-                        get_project_manager().update_scene_sheet(
+                        manager.update_scene_sheet(
                             project_name,
                             name,
                             f"scenes/{filename}",
@@ -258,7 +318,7 @@ async def upload_file(
             if upload_type == "prop" and name:
                 try:
                     with project_change_source("webui"):
-                        get_project_manager().update_prop_sheet(
+                        manager.update_prop_sheet(
                             project_name,
                             name,
                             f"props/{filename}",
@@ -289,6 +349,7 @@ async def _handle_source_upload(
     project_name: str,
     file: UploadFile,
     on_conflict: str,
+    user_id: str,
     _t: Translator,
 ):
     """Source 分支：通过 SourceLoader 规范化为 UTF-8 .txt，并按需备份原始字节。"""
@@ -296,7 +357,8 @@ async def _handle_source_upload(
         raise HTTPException(status_code=400, detail=_t("invalid_on_conflict"))
 
     try:
-        project_dir = get_project_manager().get_project_path(project_name)
+        _ensure_project_access(project_name, user_id, _t)
+        project_dir = get_project_manager_for_user(user_id).get_project_path(project_name)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=_t("project_not_found", name=project_name))
 
@@ -389,7 +451,9 @@ async def list_project_files(project_name: str, _user: CurrentUser, _t: Translat
     try:
 
         def _sync():
-            project_dir = get_project_manager().get_project_path(project_name)
+            manager = get_project_manager_for_user(_user.id)
+            _ensure_project_access(project_name, _user.id, _t)
+            project_dir = manager.get_project_path(project_name)
 
             files = {
                 "source": [],
@@ -444,17 +508,13 @@ async def get_source_file(project_name: str, filename: str, _user: CurrentUser, 
     try:
 
         def _sync():
-            project_dir = get_project_manager().get_project_path(project_name)
-            source_path = project_dir / "source" / filename
+            manager = get_project_manager_for_user(_user.id)
+            _ensure_project_access(project_name, _user.id, _t)
+            project_dir = manager.get_project_path(project_name)
+            source_path = _source_file_path(project_dir, filename, _t)
 
             if not source_path.exists():
                 raise HTTPException(status_code=404, detail=_t("file_not_found", path=filename))
-
-            # 安全检查：确保路径在项目目录内
-            try:
-                source_path.resolve().relative_to(project_dir.resolve())
-            except ValueError:
-                raise HTTPException(status_code=403, detail=_t("forbidden_access"))
 
             return source_path.read_text(encoding="utf-8")
 
@@ -484,16 +544,12 @@ async def update_source_file(
     try:
 
         def _sync():
-            project_dir = get_project_manager().get_project_path(project_name)
+            manager = get_project_manager_for_user(_user.id)
+            _ensure_project_access(project_name, _user.id, _t)
+            project_dir = manager.get_project_path(project_name)
             source_dir = project_dir / "source"
             source_dir.mkdir(parents=True, exist_ok=True)
-            source_path = source_dir / filename
-
-            # 安全检查：确保路径在项目目录内
-            try:
-                source_path.resolve().relative_to(project_dir.resolve())
-            except ValueError:
-                raise HTTPException(status_code=403, detail=_t("forbidden_access"))
+            source_path = _source_file_path(project_dir, filename, _t)
 
             source_path.write_text(content, encoding="utf-8")
             return {"success": True, "path": f"source/{filename}"}
@@ -515,14 +571,10 @@ async def delete_source_file(project_name: str, filename: str, _user: CurrentUse
     try:
 
         def _sync():
-            project_dir = get_project_manager().get_project_path(project_name)
-            source_path = project_dir / "source" / filename
-
-            # 安全检查：确保路径在项目目录内
-            try:
-                source_path.resolve().relative_to(project_dir.resolve())
-            except ValueError:
-                raise HTTPException(status_code=403, detail=_t("forbidden_access"))
+            manager = get_project_manager_for_user(_user.id)
+            _ensure_project_access(project_name, _user.id, _t)
+            project_dir = manager.get_project_path(project_name)
+            source_path = _source_file_path(project_dir, filename, _t)
 
             if source_path.exists():
                 source_path.unlink()
@@ -557,7 +609,9 @@ async def list_drafts(project_name: str, _user: CurrentUser, _t: Translator):
     try:
 
         def _sync():
-            project_dir = get_project_manager().get_project_path(project_name)
+            manager = get_project_manager_for_user(_user.id)
+            _ensure_project_access(project_name, _user.id, _t)
+            project_dir = manager.get_project_path(project_name)
             drafts_dir = project_dir / "drafts"
 
             result = {}
@@ -624,7 +678,7 @@ def _get_step_title(filename: str, _t: Callable[..., str]) -> str:
     return titles.get(filename, filename)
 
 
-def _load_project_modes(project_name: str, episode: int) -> tuple[str, str | None]:
+def _load_project_modes(project_name: str, episode: int, user_id: str | None = None) -> tuple[str, str | None]:
     """走 ProjectManager.load_project，派生 (content_mode, generation_mode)。
 
     复用 load_project 以获得文件锁和 _migrate_legacy_style 迁移；generation_mode 的
@@ -632,7 +686,7 @@ def _load_project_modes(project_name: str, episode: int) -> tuple[str, str | Non
     项目不存在时返回 ("drama", None)，由调用方走 content_mode-only 分支。
     """
     try:
-        data = get_project_manager().load_project(project_name)
+        data = get_project_manager_for_user(user_id).load_project(project_name)
     except FileNotFoundError:
         return "drama", None
     content_mode = data.get("content_mode", "drama")
@@ -663,8 +717,10 @@ async def get_draft_content(project_name: str, episode: int, step_num: int, _use
     try:
 
         def _sync():
-            project_dir = get_project_manager().get_project_path(project_name)
-            content_mode, generation_mode = _load_project_modes(project_name, episode)
+            manager = get_project_manager_for_user(_user.id)
+            _ensure_project_access(project_name, _user.id, _t)
+            project_dir = manager.get_project_path(project_name)
+            content_mode, generation_mode = _load_project_modes(project_name, episode, _user.id)
             step_files = _get_step_files(content_mode, generation_mode)
 
             if step_num not in step_files:
@@ -698,8 +754,10 @@ async def update_draft_content(
     try:
 
         def _sync():
-            project_dir = get_project_manager().get_project_path(project_name)
-            content_mode, generation_mode = _load_project_modes(project_name, episode)
+            manager = get_project_manager_for_user(_user.id)
+            _ensure_project_access(project_name, _user.id, _t)
+            project_dir = manager.get_project_path(project_name)
+            content_mode, generation_mode = _load_project_modes(project_name, episode, _user.id)
             step_files = _get_step_files(content_mode, generation_mode)
 
             if step_num not in step_files:
@@ -731,7 +789,7 @@ async def update_draft_content(
                 "important": is_new,
             }
             try:
-                emit_project_change_batch(project_name, [change], source="worker")
+                emit_project_change_batch(project_name, [change], source="worker", user_id=_user.id)
             except Exception:
                 logger.warning("发送 draft 事件失败 project=%s episode=%s", project_name, episode, exc_info=True)
 
@@ -749,8 +807,10 @@ async def delete_draft(project_name: str, episode: int, step_num: int, _user: Cu
     try:
 
         def _sync():
-            project_dir = get_project_manager().get_project_path(project_name)
-            content_mode, generation_mode = _load_project_modes(project_name, episode)
+            manager = get_project_manager_for_user(_user.id)
+            _ensure_project_access(project_name, _user.id, _t)
+            project_dir = manager.get_project_path(project_name)
+            content_mode, generation_mode = _load_project_modes(project_name, episode, _user.id)
             step_files = _get_step_files(content_mode, generation_mode)
 
             if step_num not in step_files:
@@ -795,7 +855,9 @@ async def upload_style_image(project_name: str, _user: CurrentUser, _t: Translat
         content = await file.read()
 
         def _sync_prepare():
-            project_dir = get_project_manager().get_project_path(project_name)
+            manager = get_project_manager_for_user(_user.id)
+            _ensure_project_access(project_name, _user.id, _t)
+            project_dir = manager.get_project_path(project_name)
             try:
                 content_norm, new_ext = normalize_uploaded_image(content, Path(file.filename).suffix.lower())
             except ValueError:
@@ -815,7 +877,7 @@ async def upload_style_image(project_name: str, _user: CurrentUser, _t: Translat
         from lib.text_backends.prompts import STYLE_ANALYSIS_PROMPT
         from lib.text_generator import TextGenerator
 
-        generator = await TextGenerator.create(TextTaskType.STYLE_ANALYSIS, project_name)
+        generator = await TextGenerator.create(TextTaskType.STYLE_ANALYSIS, project_name, user_id=_user.id)
         result = await generator.generate(
             TextGenerationRequest(prompt=STYLE_ANALYSIS_PROMPT, images=[ImageInput(path=output_path)]),
             project_name=project_name,
@@ -823,8 +885,9 @@ async def upload_style_image(project_name: str, _user: CurrentUser, _t: Translat
         style_description = result.text
 
         def _sync_save():
+            manager = get_project_manager_for_user(_user.id)
             # 更新 project.json
-            project_data = get_project_manager().load_project(project_name)
+            project_data = _ensure_project_access(project_name, _user.id, _t)
             project_data["style_image"] = style_filename
             project_data["style_description"] = style_description
             # 强互斥：自定义参考图与模版二选一。除了清 template_id，
@@ -833,7 +896,7 @@ async def upload_style_image(project_name: str, _user: CurrentUser, _t: Translat
             project_data.pop("style_template_id", None)
             project_data["style"] = ""
             with project_change_source("webui"):
-                get_project_manager().save_project(project_name, project_data)
+                manager.save_project(project_name, project_data)
 
         await asyncio.to_thread(_sync_save)
 

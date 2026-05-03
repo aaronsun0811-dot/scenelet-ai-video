@@ -6,9 +6,15 @@ export function ContextBanner() {
 
   if (!focusedContext) return null;
 
-  const icons = { character: User, scene: MapPin, prop: Puzzle, segment: Film };
+  const icons = { character: User, scene: MapPin, prop: Puzzle, segment: Film, "reference-unit": Film };
   const Icon = icons[focusedContext.type];
-  const labels: Record<string, string> = { character: "角色", scene: "场景", prop: "道具", segment: "片段" };
+  const labels: Record<string, string> = {
+    character: "角色",
+    scene: "场景",
+    prop: "道具",
+    segment: "片段",
+    "reference-unit": "参考 Unit",
+  };
 
   return (
     <div className="flex items-center gap-2 border-b border-gray-800 bg-indigo-950/30 px-3 py-1.5 text-xs">

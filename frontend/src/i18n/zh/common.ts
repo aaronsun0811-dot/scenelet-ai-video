@@ -4,6 +4,7 @@ export default {
   'language': '语言',
   'chinese': '中文',
   'english': '英文',
+  'japanese': '日文',
   'settings': '设置',
   'logout': '登出',
   'cancel': '取消',

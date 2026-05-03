@@ -121,6 +121,16 @@ describe("stores", () => {
 
     app.setTaskHudOpen(true);
     expect(useAppStore.getState().taskHudOpen).toBe(true);
+    app.triggerTaskHudFocus(" task-1 ");
+    expect(useAppStore.getState().taskHudOpen).toBe(true);
+    expect(useAppStore.getState().taskHudFocusTarget).toEqual(
+      expect.objectContaining({ task_id: "task-1" }),
+    );
+    const taskHudFocusRequestId = useAppStore.getState().taskHudFocusTarget?.request_id;
+    app.clearTaskHudFocusTarget("other-request");
+    expect(useAppStore.getState().taskHudFocusTarget?.request_id).toBe(taskHudFocusRequestId);
+    app.clearTaskHudFocusTarget(taskHudFocusRequestId);
+    expect(useAppStore.getState().taskHudFocusTarget).toBeNull();
 
     expect(useAppStore.getState().sourceFilesVersion).toBe(0);
     app.invalidateSourceFiles();

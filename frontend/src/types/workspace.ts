@@ -3,20 +3,21 @@ export type ProjectEventSource = "webui" | "worker" | "filesystem";
 export interface ProjectChangeFocus {
   pane: "characters" | "scenes" | "props" | "episode";
   episode?: number;
-  anchor_type?: "character" | "scene" | "prop" | "segment";
+  anchor_type?: "character" | "scene" | "prop" | "segment" | "reference-unit";
   anchor_id?: string;
   tab?: string;
 }
 
 export interface ProjectChange {
-  entity_type: "project" | "character" | "scene" | "prop" | "segment" | "episode" | "overview" | "draft" | "grid";
+  entity_type: "project" | "character" | "scene" | "prop" | "segment" | "episode" | "overview" | "draft" | "grid" | "reference_video_unit";
   action:
     | "created"
     | "updated"
     | "deleted"
     | "storyboard_ready"
     | "video_ready"
-    | "grid_ready";
+    | "grid_ready"
+    | "reference_video_ready";
   entity_id: string;
   label: string;
   script_file?: string;
@@ -43,7 +44,7 @@ export interface ProjectEventSnapshotPayload {
 
 export interface WorkspaceFocusTarget {
   request_id: string;
-  type: "character" | "scene" | "prop" | "segment";
+  type: "character" | "scene" | "prop" | "segment" | "reference-unit";
   id: string;
   route: string;
   highlight: true;

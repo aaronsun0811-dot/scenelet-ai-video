@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from lib.config.registry import PROVIDER_REGISTRY
 from lib.config.repository import ProviderConfigRepository, SystemSettingRepository
+from lib.db.base import DEFAULT_USER_ID
 from lib.db.repositories.credential_repository import CredentialRepository
 
 _DEFAULT_VIDEO_BACKEND = "gemini-aistudio/veo-3.1-lite-generate-preview"
@@ -26,6 +27,13 @@ _ANTHROPIC_ENV_MAP: dict[str, str] = {
 }
 
 
+def _model_id_from_backend(value: str) -> str:
+    value = value.strip()
+    if "/" not in value:
+        return value
+    return value.split("/", 1)[1].strip()
+
+
 def sync_anthropic_env(all_settings: dict[str, str]) -> None:
     """Sync Anthropic-related DB settings to environment variables.
 
@@ -38,6 +46,17 @@ def sync_anthropic_env(all_settings: dict[str, str]) -> None:
             os.environ[env_key] = value
         else:
             os.environ.pop(env_key, None)
+
+    agent_backend = all_settings.get("agent_model_backend", "").strip()
+    if agent_backend:
+        os.environ["SCENELET_AGENT_MODEL_BACKEND"] = agent_backend
+        os.environ["ARCREEL_AGENT_MODEL_BACKEND"] = agent_backend
+        model_id = _model_id_from_backend(agent_backend)
+        if model_id:
+            os.environ["ANTHROPIC_MODEL"] = model_id
+    else:
+        os.environ.pop("SCENELET_AGENT_MODEL_BACKEND", None)
+        os.environ.pop("ARCREEL_AGENT_MODEL_BACKEND", None)
 
 
 @dataclass
@@ -55,7 +74,8 @@ class ProviderStatus:
 
 
 class ConfigService:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, *, user_id: str = DEFAULT_USER_ID) -> None:
+        self.user_id = user_id
         self._provider_repo = ProviderConfigRepository(session)
         self._setting_repo = SystemSettingRepository(session)
 
@@ -88,7 +108,7 @@ class ConfigService:
 
     async def get_all_providers_status(self) -> list[ProviderStatus]:
         all_configured = await self._provider_repo.get_all_configured_keys_bulk()
-        cred_repo = CredentialRepository(self._provider_repo.session)
+        cred_repo = CredentialRepository(self._provider_repo.session, user_id=self.user_id)
         active_creds = await cred_repo.get_active_credentials_bulk()
         statuses = []
         for name, meta in PROVIDER_REGISTRY.items():

@@ -39,6 +39,9 @@ python .claude/skills/manage-project/scripts/get_video_capabilities.py --project
 ### Step 1: 读取项目信息和小说原文
 
 使用 Read 工具读取 `projects/{项目名}/project.json`，了解项目概述和已有角色/场景/道具。
+同时记录 `content_type`：
+- `narration_story`：旁白驱动，按叙事信息点拆分；每段只承载一个清晰信息点，画面服务讲述。
+- `education_sketch`：知识小剧场，按“问题 / 解释 / 示例 / 总结”拆分；每段只讲一个知识点，保留可视化白板/道具/演示线索。
 
 使用 Read 工具读取本集小说文件 `projects/{项目名}/source/episode_{N}.txt`。
 
@@ -54,6 +57,8 @@ python .claude/skills/manage-project/scripts/get_video_capabilities.py --project
 **拆分点**：
 - 优先在句号、问号、感叹号、省略号等标点处拆分
 - 段落结束处拆分
+- `narration_story` 遇到时间跳跃、情绪转折、关键信息揭示时优先拆分
+- `education_sketch` 遇到新知识点、新例子、角色提问/回答切换时优先拆分
 
 **标记对话片段**：
 - 识别包含角色对话的片段（如 "XXX说道"、""XXX""、「XXX」）
@@ -107,3 +112,4 @@ python .claude/skills/manage-project/scripts/get_video_capabilities.py --project
 - 原文字段保留完整的标点符号
 - 对话片段的原文包含完整的说话内容和引导语（如"他说道"）
 - segment_break 不要滥用，只在真正的场景切换处标记
+- 内容类型优先级高于通用 narration 规则：口播故事保留叙事节奏，知识小剧场优先保证讲解清晰。

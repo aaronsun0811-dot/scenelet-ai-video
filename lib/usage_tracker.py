@@ -97,10 +97,11 @@ class UsageTracker:
         provider: str | None = None,
         start_date: datetime | None = None,
         end_date: datetime | None = None,
+        user_id: str | None = None,
     ) -> dict[str, Any]:
 
         async with self._session_factory() as session:
-            repo = UsageRepository(session)
+            repo = UsageRepository(session, user_id=user_id)
             return await repo.get_stats(
                 project_name=project_name,
                 provider=provider,
@@ -114,10 +115,11 @@ class UsageTracker:
         provider: str | None = None,
         start_date: datetime | None = None,
         end_date: datetime | None = None,
+        user_id: str | None = None,
     ) -> dict[str, Any]:
 
         async with self._session_factory() as session:
-            repo = UsageRepository(session)
+            repo = UsageRepository(session, user_id=user_id)
             return await repo.get_stats_grouped_by_provider(
                 project_name=project_name,
                 provider=provider,
@@ -134,10 +136,11 @@ class UsageTracker:
         end_date: datetime | None = None,
         page: int = 1,
         page_size: int = 20,
+        user_id: str | None = None,
     ) -> dict[str, Any]:
 
         async with self._session_factory() as session:
-            repo = UsageRepository(session)
+            repo = UsageRepository(session, user_id=user_id)
             return await repo.get_calls(
                 project_name=project_name,
                 call_type=call_type,
@@ -148,18 +151,18 @@ class UsageTracker:
                 page_size=page_size,
             )
 
-    async def get_actual_costs_by_segment(self, project_name: str) -> dict:
+    async def get_actual_costs_by_segment(self, project_name: str, *, user_id: str | None = None) -> dict:
         async with self._session_factory() as session:
-            repo = UsageRepository(session)
+            repo = UsageRepository(session, user_id=user_id)
             return await repo.get_actual_costs_by_segment(project_name)
 
-    async def get_project_image_costs_by_asset_type(self, project_name: str) -> dict:
+    async def get_project_image_costs_by_asset_type(self, project_name: str, *, user_id: str | None = None) -> dict:
         async with self._session_factory() as session:
-            repo = UsageRepository(session)
+            repo = UsageRepository(session, user_id=user_id)
             return await repo.get_project_image_costs_by_asset_type(project_name)
 
-    async def get_projects_list(self) -> list[str]:
+    async def get_projects_list(self, *, user_id: str | None = None) -> list[str]:
 
         async with self._session_factory() as session:
-            repo = UsageRepository(session)
+            repo = UsageRepository(session, user_id=user_id)
             return await repo.get_projects_list()

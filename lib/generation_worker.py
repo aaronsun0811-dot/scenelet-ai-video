@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 from datetime import UTC
 
+from lib.db.base import DEFAULT_USER_ID
 from lib.generation_queue import (
     TASK_POLL_INTERVAL_SEC,
     TASK_WORKER_HEARTBEAT_SEC,
@@ -98,9 +99,14 @@ async def _extract_provider(task: dict[str, Any]) -> str:
         return DEFAULT_PROVIDER
 
     from lib.config.resolver import get_project_manager
+    from server.services.generation_tasks import resolve_credential_user_id
 
     task_type = task.get("task_type", "")
-    project = get_project_manager().load_project(project_name)
+    user_id = task.get("user_id") or DEFAULT_USER_ID
+    project_manager = get_project_manager()
+    if hasattr(project_manager, "for_user"):
+        project_manager = project_manager.for_user(user_id)
+    project = project_manager.load_project(project_name)
     project_provider = _project_level_provider(project, task_type)
     if project_provider:
         return _normalize_provider_id(project_provider)
@@ -109,7 +115,10 @@ async def _extract_provider(task: dict[str, Any]) -> str:
     from lib.config.resolver import ConfigResolver
     from lib.db import async_session_factory
 
-    resolver = ConfigResolver(async_session_factory)
+    resolver = ConfigResolver(
+        async_session_factory,
+        user_id=resolve_credential_user_id(project, user_id),
+    )
     if task_type == "video":
         provider_id, _ = await resolver.default_video_backend()
     else:

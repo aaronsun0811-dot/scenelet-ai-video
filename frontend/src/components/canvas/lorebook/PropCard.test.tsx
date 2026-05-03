@@ -1,5 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { API } from "@/api";
 import { PropCard } from "./PropCard";
 
 vi.mock("@/components/canvas/timeline/VersionTimeMachine", () => ({
@@ -8,6 +10,10 @@ vi.mock("@/components/canvas/timeline/VersionTimeMachine", () => ({
 
 describe("PropCard", () => {
   const prop = { description: "古铜色钥匙" };
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
 
   it("renders name and description", () => {
     render(
@@ -23,8 +29,21 @@ describe("PropCard", () => {
     expect(screen.getByDisplayValue("古铜色钥匙")).toBeInTheDocument();
   });
 
-  it("invokes onGenerate when generate button clicked", () => {
+  it("invokes onGenerate after generation preflight confirmation", async () => {
+    const user = userEvent.setup();
     const onGenerate = vi.fn();
+    vi.spyOn(API, "requestGenerationPreflight").mockResolvedValue({
+      project_name: "demo",
+      task_type: "prop",
+      resource_id: "A",
+      billing_mode: "byok",
+      required_credits: 0,
+      count: 1,
+      minimum_generation_balance: 1,
+      can_submit: true,
+      blocking: [],
+      warnings: [{ code: "byok_uses_user_api", message: "本次生成将使用用户自己的 API Key，不扣平台积分。" }],
+    });
     render(
       <PropCard
         name="A"
@@ -34,7 +53,9 @@ describe("PropCard", () => {
         onGenerate={onGenerate}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /生成/ }));
+    await user.click(screen.getByRole("button", { name: /生成/ }));
+    await user.click(await screen.findByRole("button", { name: "确认提交" }));
+
     expect(onGenerate).toHaveBeenCalledWith("A");
   });
 

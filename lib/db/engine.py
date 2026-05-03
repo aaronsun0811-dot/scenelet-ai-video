@@ -25,13 +25,25 @@ from sqlalchemy.ext.asyncio import (
 logging.getLogger("sqlalchemy.pool.impl").setLevel(logging.CRITICAL)
 
 
+def _default_sqlite_db_path(project_root: Path) -> Path:
+    """Return the default SQLite path while preserving existing installs."""
+    projects_dir = project_root / "projects"
+    preferred = projects_dir / ".scenelet.db"
+    legacy = projects_dir / ".arcreel.db"
+    if preferred.exists():
+        return preferred
+    if legacy.exists():
+        return legacy
+    return preferred
+
+
 def get_database_url() -> str:
     """Resolve DATABASE_URL from environment or default to SQLite."""
     url = os.environ.get("DATABASE_URL", "").strip()
     if url:
         return url
     project_root = Path(__file__).parent.parent.parent
-    db_path = project_root / "projects" / ".arcreel.db"
+    db_path = _default_sqlite_db_path(project_root)
     return f"sqlite+aiosqlite:///{db_path}"
 
 

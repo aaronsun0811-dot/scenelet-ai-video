@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -13,6 +14,8 @@ from lib.db.base import DEFAULT_USER_ID, dt_to_iso, utc_now
 from lib.db.models.api_call import ApiCall
 from lib.db.repositories.base import BaseRepository
 from lib.providers import PROVIDER_GEMINI, CallType
+
+logger = logging.getLogger(__name__)
 
 
 def _classify_asset_output_path(output_path: str | None) -> str:
@@ -67,6 +70,70 @@ def _row_to_dict(row: ApiCall) -> dict[str, Any]:
 
 
 class UsageRepository(BaseRepository):
+    def __init__(self, session, *, user_id: str | None = None):
+        super().__init__(session)
+        self.user_id = user_id
+
+    def _scope_query(self, stmt, model):
+        if self.user_id and hasattr(model, "user_id"):
+            return stmt.where(model.user_id == self.user_id)
+        return stmt
+
+    async def _debit_platform_credits_if_needed(
+        self,
+        row: ApiCall,
+        *,
+        status: str,
+        cost_amount: float,
+        currency: str,
+    ) -> None:
+        if status != "success" or cost_amount <= 0:
+            return
+
+        try:
+            from lib import PROJECT_ROOT
+            from lib.credit_utils import cost_to_credits
+            from lib.db.repositories.credit_repository import CreditRepository
+            from lib.project_manager import ProjectManager
+
+            project_manager = ProjectManager(PROJECT_ROOT / "projects")
+            try:
+                project = project_manager.for_user(row.user_id or DEFAULT_USER_ID).load_project(row.project_name)
+            except FileNotFoundError:
+                project = project_manager.load_project(row.project_name)
+            if project.get("billing_mode") != "platform_credits":
+                return
+
+            credits = cost_to_credits(cost_amount, currency)
+            if credits <= 0:
+                return
+
+            repo = CreditRepository(self.session, user_id=row.user_id or DEFAULT_USER_ID)
+            await repo.add_entry(
+                amount=-credits,
+                kind="generation_usage",
+                reference_type="api_call",
+                reference_id=str(row.id),
+                description=f"{row.project_name} {row.call_type or 'generation'}",
+                metadata={
+                    "project_name": row.project_name,
+                    "resource_id": row.segment_id,
+                    "segment_id": row.segment_id,
+                    "provider": row.provider,
+                    "call_type": row.call_type,
+                    "model": row.model,
+                    "cost_amount": cost_amount,
+                    "currency": currency,
+                },
+                idempotency_key=f"api-call:{row.id}",
+                allow_negative_balance=True,
+            )
+        except FileNotFoundError:
+            return
+        except Exception:
+            # Billing should not turn a successful provider call into a failed generation.
+            logger.exception("平台积分扣费失败 api_call_id=%s", row.id)
+
     async def start_call(
         self,
         *,
@@ -153,7 +220,7 @@ class UsageRepository(BaseRepository):
         if status == "success" and is_custom_provider(effective_provider):
             from lib.db.repositories.custom_provider_repo import CustomProviderRepository
 
-            repo = CustomProviderRepository(self.session)
+            repo = CustomProviderRepository(self.session, user_id=row.user_id or DEFAULT_USER_ID)
             price_model = await repo.get_model_by_ids(parse_provider_id(effective_provider), row.model or "")
             if price_model:
                 custom_price_input = price_model.price_input
@@ -214,6 +281,12 @@ class UsageRepository(BaseRepository):
                 output_path=output_path,
                 error_message=error_truncated,
             )
+        )
+        await self._debit_platform_credits_if_needed(
+            row,
+            status=status,
+            cost_amount=cost_amount,
+            currency=currency,
         )
         await self.session.commit()
 

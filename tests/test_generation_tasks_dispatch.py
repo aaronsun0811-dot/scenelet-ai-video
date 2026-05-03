@@ -18,6 +18,33 @@ def test_task_change_specs_registered_for_reference_video():
     assert include_script_episode is True
 
 
+def test_generation_focus_targets_reference_units_and_grid_segments():
+    from server.services.generation_tasks import _build_generation_focus
+
+    assert _build_generation_focus(
+        "reference_video",
+        "E1U2",
+        {"script_file": "episode_1.json"},
+        1,
+    ) == {
+        "pane": "episode",
+        "episode": 1,
+        "anchor_type": "reference-unit",
+        "anchor_id": "E1U2",
+    }
+    assert _build_generation_focus(
+        "grid",
+        "grid_1",
+        {"script_file": "episode_1.json", "scene_ids": ["E1S01", "E1S02"]},
+        1,
+    ) == {
+        "pane": "episode",
+        "episode": 1,
+        "anchor_type": "segment",
+        "anchor_id": "E1S01",
+    }
+
+
 @pytest.mark.asyncio
 async def test_execute_generation_task_rejects_unknown_type():
     from server.services.generation_tasks import execute_generation_task

@@ -17,7 +17,15 @@ PREFIX = f"/api/v1/projects/{PROJECT}/assistant"
 _FAKE_USER = CurrentUserInfo(id="default", sub="testuser", role="admin")
 
 
+class _FakeProjectManager:
+    def load_project(self, project_name):
+        if project_name != PROJECT:
+            raise FileNotFoundError(project_name)
+        return {"name": project_name, "owner_user_id": _FAKE_USER.id}
+
+
 def _build_client() -> TestClient:
+    assistant.project_manager = _FakeProjectManager()
     app = FastAPI()
     app.dependency_overrides[get_current_user] = lambda: _FAKE_USER
     app.dependency_overrides[get_current_user_flexible] = lambda: _FAKE_USER

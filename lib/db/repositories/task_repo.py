@@ -6,6 +6,7 @@ import json
 import logging
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from sqlalchemy import delete as sa_delete
@@ -19,6 +20,7 @@ from lib.db.repositories.base import BaseRepository
 logger = logging.getLogger(__name__)
 
 ACTIVE_TASK_STATUSES = ("queued", "running")
+TaskPayloadRefresh = Callable[[dict[str, Any], dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
 def _json_dumps(value: Any) -> str:
@@ -139,6 +141,7 @@ class TaskRepository(BaseRepository):
             result = await self.session.execute(
                 select(Task)
                 .where(
+                    Task.user_id == user_id,
                     Task.project_name == project_name,
                     Task.task_type == task_type,
                     Task.resource_id == resource_id,
@@ -174,6 +177,96 @@ class TaskRepository(BaseRepository):
             "deduped": False,
             "existing_task_id": None,
         }
+
+    async def retry_failed_task(
+        self,
+        task_id: str,
+        *,
+        user_id: str | None = None,
+        payload_refresh: TaskPayloadRefresh | None = None,
+    ) -> dict[str, Any]:
+        return await self._retry_failed_task(
+            task_id,
+            user_id=user_id,
+            visited=set(),
+            payload_refresh=payload_refresh,
+        )
+
+    async def _retry_failed_task(
+        self,
+        task_id: str,
+        *,
+        user_id: str | None = None,
+        visited: set[str],
+        payload_refresh: TaskPayloadRefresh | None = None,
+    ) -> dict[str, Any]:
+        if task_id in visited:
+            raise ValueError(f"任务 '{task_id}' 存在循环依赖，无法重试")
+        visited.add(task_id)
+
+        filters = [Task.task_id == task_id]
+        if user_id:
+            filters.append(Task.user_id == user_id)
+        result = await self.session.execute(select(Task).where(*filters))
+        task = result.scalar_one_or_none()
+        if not task:
+            raise ValueError(f"任务 '{task_id}' 不存在")
+        if task.status != "failed":
+            raise ValueError("只有失败的任务可以重试")
+
+        retried_tasks: list[dict[str, Any]] = []
+        dependency_task_id = task.dependency_task_id
+        if dependency_task_id:
+            dependency_filters = [Task.task_id == dependency_task_id]
+            if user_id:
+                dependency_filters.append(Task.user_id == user_id)
+            dep_result = await self.session.execute(select(Task).where(*dependency_filters))
+            dependency = dep_result.scalar_one_or_none()
+            if not dependency:
+                raise ValueError(f"依赖任务 '{dependency_task_id}' 不存在，无法重试")
+            if dependency.status == "failed":
+                retried_dependency = await self._retry_failed_task(
+                    dependency_task_id,
+                    user_id=user_id,
+                    visited=visited,
+                    payload_refresh=payload_refresh,
+                )
+                dependency_task_id = retried_dependency["task_id"]
+                retried_tasks.extend(retried_dependency.get("retried_tasks", []))
+            elif dependency.status in ("queued", "running", "succeeded"):
+                dependency_task_id = dependency.task_id
+            else:
+                raise ValueError(f"依赖任务 '{dependency_task_id}' 已取消，无法重试")
+
+        payload = _json_loads(task.payload_json, {})
+        if payload_refresh is not None:
+            refreshed_payload = await payload_refresh(payload, _task_to_dict(task))
+            if isinstance(refreshed_payload, dict):
+                payload = refreshed_payload
+        result = await self.enqueue(
+            project_name=task.project_name,
+            task_type=task.task_type,
+            media_type=task.media_type,
+            resource_id=task.resource_id,
+            payload=payload,
+            script_file=task.script_file,
+            source=task.source,
+            dependency_task_id=dependency_task_id,
+            dependency_group=task.dependency_group,
+            dependency_index=task.dependency_index,
+            user_id=task.user_id,
+        )
+        result["retried_tasks"] = [
+            *retried_tasks,
+            {
+                "task_id": result["task_id"],
+                "task_type": task.task_type,
+                "project_name": task.project_name,
+                "payload": payload,
+                "deduped": result.get("deduped", False),
+            },
+        ]
+        return result
 
     # NOTE: In multi-user mode, override this method to add user_id filtering
     async def claim_next(self, media_type: str) -> dict[str, Any] | None:
@@ -254,6 +347,7 @@ class TaskRepository(BaseRepository):
         if not done_task:
             return None
 
+        await self._release_credit_reservation(done_task.task_id, done_task.user_id)
         task_data = _task_to_dict(done_task)
         await self._append_event(
             task_id=task_id,
@@ -313,6 +407,7 @@ class TaskRepository(BaseRepository):
 
         res = await self.session.execute(select(Task).where(Task.task_id == task_id))
         failed_task = res.scalar_one()
+        await self._release_credit_reservation(failed_task.task_id, failed_task.user_id)
         task_data = _task_to_dict(failed_task)
         await self._append_event(
             task_id=task_id,
@@ -356,9 +451,12 @@ class TaskRepository(BaseRepository):
             )
         return cascaded
 
-    async def get_cancel_preview(self, task_id: str) -> dict[str, Any]:
+    async def get_cancel_preview(self, task_id: str, *, user_id: str | None = None) -> dict[str, Any]:
         """预览取消某个任务的影响范围。"""
-        result = await self.session.execute(select(Task).where(Task.task_id == task_id))
+        filters = [Task.task_id == task_id]
+        if user_id:
+            filters.append(Task.user_id == user_id)
+        result = await self.session.execute(select(Task).where(*filters))
         task = result.scalar_one_or_none()
         if not task:
             raise ValueError(f"任务 '{task_id}' 不存在")
@@ -371,29 +469,35 @@ class TaskRepository(BaseRepository):
             "resource_id": task.resource_id,
         }
 
-        cascaded = await self._collect_queued_dependents(task_id)
+        cascaded = await self._collect_queued_dependents(task_id, user_id=user_id)
         return {"task": task_summary, "cascaded": cascaded}
 
-    async def _collect_queued_dependents(self, task_id: str) -> list[dict[str, Any]]:
+    async def _collect_queued_dependents(self, task_id: str, *, user_id: str | None = None) -> list[dict[str, Any]]:
         """递归收集依赖于 task_id 的所有 queued 任务摘要。"""
+        filters = [
+            Task.dependency_task_id == task_id,
+            Task.status == "queued",
+        ]
+        if user_id:
+            filters.append(Task.user_id == user_id)
         result = await self.session.execute(
             select(Task.task_id, Task.task_type, Task.resource_id)
-            .where(
-                Task.dependency_task_id == task_id,
-                Task.status == "queued",
-            )
+            .where(*filters)
             .order_by(Task.queued_at.asc())
         )
         dependents = []
         for row in result.all():
             summary = {"task_id": row[0], "task_type": row[1], "resource_id": row[2]}
             dependents.append(summary)
-            dependents.extend(await self._collect_queued_dependents(row[0]))
+            dependents.extend(await self._collect_queued_dependents(row[0], user_id=user_id))
         return dependents
 
-    async def cancel_task(self, task_id: str) -> dict[str, Any]:
+    async def cancel_task(self, task_id: str, *, user_id: str | None = None) -> dict[str, Any]:
         """取消一个 queued 任务，级联取消其所有 queued 依赖任务。"""
-        result = await self.session.execute(select(Task).where(Task.task_id == task_id))
+        filters = [Task.task_id == task_id]
+        if user_id:
+            filters.append(Task.user_id == user_id)
+        result = await self.session.execute(select(Task).where(*filters))
         task = result.scalar_one_or_none()
         if not task:
             raise ValueError(f"任务 '{task_id}' 不存在")
@@ -412,7 +516,7 @@ class TaskRepository(BaseRepository):
             if t and t.status == "running":
                 skipped_running.append(_task_to_dict(t))
 
-        await self._cascade_cancel_dependents(task_id, cancelled, skipped_running)
+        await self._cascade_cancel_dependents(task_id, cancelled, skipped_running, user_id=user_id)
 
         await self.session.commit()
         return {"cancelled": cancelled, "skipped_running": skipped_running}
@@ -437,6 +541,7 @@ class TaskRepository(BaseRepository):
         await self.session.flush()
         res = await self.session.execute(select(Task).where(Task.task_id == task_id))
         cancelled_task = res.scalar_one()
+        await self._release_credit_reservation(cancelled_task.task_id, cancelled_task.user_id)
         task_data = _task_to_dict(cancelled_task)
         await self._append_event(
             task_id=task_id,
@@ -447,22 +552,37 @@ class TaskRepository(BaseRepository):
         )
         return task_data
 
+    async def _release_credit_reservation(self, task_id: str, user_id: str | None) -> None:
+        from lib.db.repositories.credit_repository import CreditRepository
+
+        await CreditRepository(self.session, user_id=user_id or DEFAULT_USER_ID).release_generation_reservation(task_id)
+
     async def _cascade_cancel_dependents(
         self,
         task_id: str,
         cancelled: list[dict[str, Any]],
         skipped_running: list[dict[str, Any]],
+        *,
+        user_id: str | None = None,
     ) -> None:
         """递归取消依赖于 task_id 的所有 queued 任务。"""
+        filters = [Task.dependency_task_id == task_id]
+        if user_id:
+            filters.append(Task.user_id == user_id)
         result = await self.session.execute(
-            select(Task).where(Task.dependency_task_id == task_id).order_by(Task.queued_at.asc())
+            select(Task).where(*filters).order_by(Task.queued_at.asc())
         )
         for dep_task in result.scalars().all():
             if dep_task.status == "queued":
                 task_data = await self._mark_cancelled(dep_task.task_id, cancelled_by="cascade")
                 if task_data:
                     cancelled.append(task_data)
-                    await self._cascade_cancel_dependents(dep_task.task_id, cancelled, skipped_running)
+                    await self._cascade_cancel_dependents(
+                        dep_task.task_id,
+                        cancelled,
+                        skipped_running,
+                        user_id=user_id,
+                    )
                 else:
                     # 竞态：初始查询时为 queued 但 UPDATE 失败，刷新检查实际状态
                     await self.session.refresh(dep_task)
@@ -471,24 +591,28 @@ class TaskRepository(BaseRepository):
             elif dep_task.status == "running":
                 skipped_running.append(_task_to_dict(dep_task))
 
-    async def get_cancel_all_preview(self, project_name: str) -> int:
+    async def get_cancel_all_preview(self, project_name: str, *, user_id: str | None = None) -> int:
         """返回项目中当前 queued 状态的任务数量。"""
+        filters = [Task.project_name == project_name, Task.status == "queued"]
+        if user_id:
+            filters.append(Task.user_id == user_id)
         result = await self.session.execute(
-            select(func.count()).select_from(Task).where(Task.project_name == project_name, Task.status == "queued")
+            select(func.count()).select_from(Task).where(*filters)
         )
         return result.scalar_one()
 
-    async def cancel_all_queued(self, project_name: str) -> dict[str, Any]:
+    async def cancel_all_queued(self, project_name: str, *, user_id: str | None = None) -> dict[str, Any]:
         """取消项目中所有 queued 任务。"""
-        queued_result = await self.session.execute(
-            select(Task).where(Task.project_name == project_name, Task.status == "queued")
-        )
+        filters = [Task.project_name == project_name, Task.status == "queued"]
+        if user_id:
+            filters.append(Task.user_id == user_id)
+        queued_result = await self.session.execute(select(Task).where(*filters))
         queued_tasks = list(queued_result.scalars().all())
 
         now = utc_now()
         stmt = (
             update(Task)
-            .where(Task.project_name == project_name, Task.status == "queued")
+            .where(*filters)
             .values(
                 status="cancelled",
                 cancelled_by="user",
@@ -506,6 +630,7 @@ class TaskRepository(BaseRepository):
                 select(Task).where(Task.task_id.in_(task_ids), Task.status == "cancelled")
             )
             for updated_task in refreshed.scalars().all():
+                await self._release_credit_reservation(updated_task.task_id, updated_task.user_id)
                 task_data = _task_to_dict(updated_task)
                 await self._append_event(
                     task_id=updated_task.task_id,
@@ -571,9 +696,10 @@ class TaskRepository(BaseRepository):
         await self.session.commit()
         return len(requeued_tasks)
 
-    async def get(self, task_id: str) -> dict[str, Any] | None:
+    async def get(self, task_id: str, *, user_id: str | None = None) -> dict[str, Any] | None:
         stmt = select(Task).where(Task.task_id == task_id)
-        stmt = self._scope_query(stmt, Task)
+        if user_id:
+            stmt = stmt.where(Task.user_id == user_id)
         result = await self.session.execute(stmt)
         task = result.scalar_one_or_none()
         return _task_to_dict(task) if task else None
@@ -585,6 +711,7 @@ class TaskRepository(BaseRepository):
         status: str | None = None,
         task_type: str | None = None,
         source: str | None = None,
+        user_id: str | None = None,
         page: int = 1,
         page_size: int = 50,
     ) -> dict[str, Any]:
@@ -601,9 +728,10 @@ class TaskRepository(BaseRepository):
             filters.append(Task.task_type == task_type)
         if source:
             filters.append(Task.source == source)
+        if user_id:
+            filters.append(Task.user_id == user_id)
 
         count_stmt = select(func.count()).select_from(Task).where(*filters)
-        count_stmt = self._scope_query(count_stmt, Task)
         total = (await self.session.execute(count_stmt)).scalar() or 0
 
         items_stmt = (
@@ -613,7 +741,6 @@ class TaskRepository(BaseRepository):
             .limit(page_size)
             .offset(offset)
         )
-        items_stmt = self._scope_query(items_stmt, Task)
         result = await self.session.execute(items_stmt)
         items = [_task_to_dict(t) for t in result.scalars().all()]
 
@@ -624,14 +751,15 @@ class TaskRepository(BaseRepository):
             "page_size": page_size,
         }
 
-    async def get_stats(self, *, project_name: str | None = None) -> dict[str, int]:
+    async def get_stats(self, *, project_name: str | None = None, user_id: str | None = None) -> dict[str, int]:
         filters = []
         if project_name:
             filters.append(Task.project_name == project_name)
+        if user_id:
+            filters.append(Task.user_id == user_id)
 
         # Group by status
         stmt = select(Task.status, func.count().label("cnt")).where(*filters).group_by(Task.status)
-        stmt = self._scope_query(stmt, Task)
         result = await self.session.execute(stmt)
 
         stats = {"queued": 0, "running": 0, "succeeded": 0, "failed": 0, "cancelled": 0, "total": 0}
@@ -648,40 +776,45 @@ class TaskRepository(BaseRepository):
         self,
         *,
         project_name: str | None = None,
+        user_id: str | None = None,
         limit: int = 200,
     ) -> list[dict[str, Any]]:
         limit = max(1, min(1000, limit))
         stmt = select(Task)
         if project_name:
             stmt = stmt.where(Task.project_name == project_name)
+        if user_id:
+            stmt = stmt.where(Task.user_id == user_id)
         stmt = stmt.order_by(Task.updated_at.desc()).limit(limit)
-        stmt = self._scope_query(stmt, Task)
 
         result = await self.session.execute(stmt)
         return [_task_to_dict(t) for t in result.scalars().all()]
 
-    # NOTE: In multi-user mode, override this method to filter by user via JOIN Task
     async def get_events_since(
         self,
         *,
         last_event_id: int,
         project_name: str | None = None,
+        user_id: str | None = None,
         limit: int = 200,
     ) -> list[dict[str, Any]]:
         limit = max(1, min(1000, limit))
         stmt = select(TaskEvent).where(TaskEvent.id > last_event_id)
         if project_name:
             stmt = stmt.where(TaskEvent.project_name == project_name)
+        if user_id:
+            stmt = stmt.join(Task, Task.task_id == TaskEvent.task_id).where(Task.user_id == user_id)
         stmt = stmt.order_by(TaskEvent.id.asc()).limit(limit)
 
         result = await self.session.execute(stmt)
         return [_event_to_dict(e) for e in result.scalars().all()]
 
-    # NOTE: In multi-user mode, override this method to filter by user via JOIN Task
-    async def get_latest_event_id(self, *, project_name: str | None = None) -> int:
+    async def get_latest_event_id(self, *, project_name: str | None = None, user_id: str | None = None) -> int:
         stmt = select(func.max(TaskEvent.id))
         if project_name:
             stmt = stmt.where(TaskEvent.project_name == project_name)
+        if user_id:
+            stmt = stmt.join(Task, Task.task_id == TaskEvent.task_id).where(Task.user_id == user_id)
         result = await self.session.execute(stmt)
         return result.scalar() or 0
 

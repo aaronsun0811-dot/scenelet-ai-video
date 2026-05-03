@@ -3,8 +3,17 @@
 MESSAGES: dict[str, str] = {
     # ===== Category names =====
     "template_category_custom": "Custom",
+    "template_category_content": "Content Types",
     "template_category_live": "Live Action",
     "template_category_anim": "Animation",
+    # ===== Content names (6) =====
+    "template_name_content_scene_sketch": "Scene Sketch",
+    "template_name_content_short_drama": "Short Drama Hook",
+    "template_name_content_fiction_adaptation": "Fiction Adaptation",
+    "template_name_content_narration_story": "Narration Story",
+    "template_name_content_ad_story": "Ad Story",
+    "template_name_content_education_sketch": "Educational Sketch",
+    "template_name_content_travel_video": "Travel Video",
     # ===== Live names (18) =====
     "template_name_live_cinematic_ancient": "Cinematic Historical",
     "template_name_live_zhang_yimou": "Zhang Yimou",
@@ -43,6 +52,14 @@ MESSAGES: dict[str, str] = {
     "template_name_anim_bloodborne": "Bloodborne",
     "template_name_anim_itojunji": "Junji Ito",
     "template_name_anim_90s_retro": "90s Retro Anime",
+    # ===== Content taglines (6) =====
+    "template_tagline_content_scene_sketch": "Dialogue · Everyday realism",
+    "template_tagline_content_short_drama": "Vertical hook · Reversal",
+    "template_tagline_content_fiction_adaptation": "Characters · Novel scenes",
+    "template_tagline_content_narration_story": "Voiceover · Mood visuals",
+    "template_tagline_content_ad_story": "Product in story · Commercial",
+    "template_tagline_content_education_sketch": "Clear teaching · Mini scene",
+    "template_tagline_content_travel_video": "Street route · Guide narration",
     # ===== Live taglines (18) =====
     "template_tagline_live_cinematic_ancient": "Pro lighting · TV quality",
     "template_tagline_live_zhang_yimou": "Bold colors · Ritual",

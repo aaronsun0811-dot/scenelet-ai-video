@@ -72,9 +72,17 @@ class _FakeService:
 _FAKE_USER = CurrentUserInfo(id="default", sub="testuser", role="admin")
 
 
+class _FakeProjectManager:
+    def load_project(self, project_name):
+        if project_name != PROJECT:
+            raise FileNotFoundError(project_name)
+        return {"name": project_name, "owner_user_id": _FAKE_USER.id}
+
+
 def _client(monkeypatch):
     fake = _FakeService()
     monkeypatch.setattr(assistant, "get_assistant_service", lambda: fake)
+    monkeypatch.setattr(assistant, "get_project_manager", lambda: _FakeProjectManager())
     app = FastAPI()
     app.dependency_overrides[get_current_user] = lambda: _FAKE_USER
     app.dependency_overrides[get_current_user_flexible] = lambda: _FAKE_USER
@@ -191,6 +199,7 @@ class TestAssistantRouterFull:
 
         fake.send_or_create = _timeout_send_or_create
         monkeypatch.setattr(assistant, "get_assistant_service", lambda: fake)
+        monkeypatch.setattr(assistant, "get_project_manager", lambda: _FakeProjectManager())
         app = FastAPI()
         app.dependency_overrides[get_current_user] = lambda: _FAKE_USER
         app.dependency_overrides[get_translator] = lambda: make_translator()

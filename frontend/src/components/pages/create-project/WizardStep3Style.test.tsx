@@ -11,14 +11,31 @@ const baseValue = {
   uploadedPreview: null,
 };
 
+const contentValue = {
+  ...baseValue,
+  templateId: "content_scene_sketch",
+  activeCategory: "content" as const,
+};
+
 const noop = () => {};
 const commonProps = { onBack: noop, onCreate: noop, onCancel: noop, creating: false };
 
 describe("WizardStep3Style", () => {
-  it("renders live templates in default live tab with default one selected", () => {
-    render(<WizardStep3Style value={baseValue} onChange={noop} {...commonProps} />);
+  it("renders content templates in the default tab with default one selected", () => {
+    render(<WizardStep3Style value={contentValue} onChange={noop} {...commonProps} />);
     // The default template gets a "default" badge
     expect(screen.getAllByText(/（默认）|\(default\)/i).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByRole("button", { name: /情景剧日常|Scene Sketch/ })).toBeInTheDocument();
+  });
+
+  it("emits onChange when a content template card is clicked", () => {
+    const onChange = vi.fn();
+    render(<WizardStep3Style value={contentValue} onChange={onChange} {...commonProps} />);
+    fireEvent.click(screen.getByRole("button", { name: /广告剧情|Ad Story/ }));
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
+      mode: "template",
+      templateId: "content_ad_story",
+    }));
   });
 
   it("emits onChange with new templateId when a template card is clicked", () => {

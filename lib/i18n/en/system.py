@@ -1,4 +1,4 @@
 MESSAGES = {
-    "system_start": "Starting ArcReel system...",
+    "system_start": "Starting Scenelet system...",
     "worker_start": "Starting GenerationWorker...",
 }

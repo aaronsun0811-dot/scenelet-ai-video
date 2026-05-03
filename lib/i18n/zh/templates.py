@@ -3,8 +3,17 @@
 MESSAGES: dict[str, str] = {
     # ===== Category names =====
     "template_category_custom": "自定义",
+    "template_category_content": "内容类型",
     "template_category_live": "AI 真人剧",
     "template_category_anim": "AI 漫剧",
+    # ===== Content names (6) =====
+    "template_name_content_scene_sketch": "情景剧日常",
+    "template_name_content_short_drama": "短剧强冲突",
+    "template_name_content_fiction_adaptation": "小说改编",
+    "template_name_content_narration_story": "口播故事",
+    "template_name_content_ad_story": "广告剧情",
+    "template_name_content_education_sketch": "知识小剧场",
+    "template_name_content_travel_video": "旅游视频",
     # ===== Live names (18) =====
     "template_name_live_cinematic_ancient": "精品古装",
     "template_name_live_zhang_yimou": "张艺谋风格",
@@ -43,6 +52,14 @@ MESSAGES: dict[str, str] = {
     "template_name_anim_bloodborne": "血源克苏鲁",
     "template_name_anim_itojunji": "伊藤润二",
     "template_name_anim_90s_retro": "90 年代日漫",
+    # ===== Content taglines (6) =====
+    "template_tagline_content_scene_sketch": "多人对话 · 生活质感",
+    "template_tagline_content_short_drama": "竖屏爆点 · 情绪反转",
+    "template_tagline_content_fiction_adaptation": "人物关系 · 网文镜头",
+    "template_tagline_content_narration_story": "旁白驱动 · 氛围画面",
+    "template_tagline_content_ad_story": "产品入戏 · 商业质感",
+    "template_tagline_content_education_sketch": "讲解清晰 · 小剧场",
+    "template_tagline_content_travel_video": "街景路线 · 导游讲解",
     # ===== Live taglines (18) =====
     "template_tagline_live_cinematic_ancient": "专业打光 · 电视剧质感",
     "template_tagline_live_zhang_yimou": "极致用色 · 仪式感",

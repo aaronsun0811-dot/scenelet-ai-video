@@ -1,12 +1,12 @@
 <h1 align="center">
   <br>
   <picture>
-    <source media="(prefers-color-scheme: light)" srcset="frontend/public/android-chrome-maskable-512x512.png">
-    <source media="(prefers-color-scheme: dark)" srcset="frontend/public/android-chrome-512x512.png">
-    <img src="frontend/public/android-chrome-maskable-512x512.png" alt="ArcReel Logo" width="128" style="border-radius: 16px;">
+    <source media="(prefers-color-scheme: light)" srcset="frontend/public/scenelet-logo-maskable-512.png">
+    <source media="(prefers-color-scheme: dark)" srcset="frontend/public/scenelet-logo-512.png">
+    <img src="frontend/public/scenelet-logo-maskable-512.png" alt="Scenelet Logo" width="128" style="border-radius: 16px;">
   </picture>
   <br>
-  ArcReel
+  Scenelet
   <br>
 </h1>
 
@@ -19,10 +19,10 @@
 
 <p align="center">
   <a href="#quick-start"><img src="https://img.shields.io/badge/Quick_Start-blue?style=for-the-badge" alt="Quick Start"></a>
-  <a href="https://github.com/ArcReel/ArcReel/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0-green?style=for-the-badge" alt="License"></a>
-  <a href="https://github.com/ArcReel/ArcReel"><img src="https://img.shields.io/github/stars/ArcReel/ArcReel?style=for-the-badge" alt="Stars"></a>
-  <a href="https://github.com/ArcReel/ArcReel/pkgs/container/arcreel"><img src="https://img.shields.io/badge/Docker-ghcr.io-blue?style=for-the-badge&logo=docker" alt="Docker"></a>
-  <a href="https://github.com/ArcReel/ArcReel/actions/workflows/test.yml"><img src="https://img.shields.io/github/actions/workflow/status/ArcReel/ArcReel/test.yml?style=for-the-badge&label=Tests" alt="Tests"></a>
+  <a href="https://github.com/Scenelet/Scenelet/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0-green?style=for-the-badge" alt="License"></a>
+  <a href="https://github.com/Scenelet/Scenelet"><img src="https://img.shields.io/github/stars/Scenelet/Scenelet?style=for-the-badge" alt="Stars"></a>
+  <a href="https://github.com/Scenelet/Scenelet/pkgs/container/arcreel"><img src="https://img.shields.io/badge/Docker-ghcr.io-blue?style=for-the-badge&logo=docker" alt="Docker"></a>
+  <a href="https://github.com/Scenelet/Scenelet/actions/workflows/test.yml"><img src="https://img.shields.io/github/actions/workflow/status/Scenelet/Scenelet/test.yml?style=for-the-badge&label=Tests" alt="Tests"></a>
 </p>
 
 <p align="center">
@@ -37,7 +37,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/hero-screenshot.png" alt="ArcReel Workspace" width="800">
+  <img src="docs/assets/hero-screenshot.png" alt="Scenelet Workspace" width="800">
 </p>
 
 ---
@@ -92,8 +92,8 @@ graph TD
 ### Default Deployment (SQLite)
 
 ```bash
-git clone https://github.com/ArcReel/ArcReel.git
-cd ArcReel/deploy
+git clone https://github.com/Scenelet/Scenelet.git
+cd Scenelet/deploy
 cp .env.example .env
 docker compose up -d
 # Visit http://localhost:1241
@@ -102,14 +102,14 @@ docker compose up -d
 ### Production Deployment (PostgreSQL)
 
 ```bash
-cd ArcReel/deploy/production
+cd Scenelet/deploy/production
 cp .env.example .env    # Set POSTGRES_PASSWORD
 docker compose up -d
 ```
 
 After first launch, log in with the default account (username `admin`, password set via `AUTH_PASSWORD` in `.env`; if not set, it will be auto-generated and written back to `.env` on first startup). Then go to **Settings** (`/settings`) to complete configuration:
 
-1. **ArcReel Agent** — Configure Anthropic API Key (powers the AI assistant), with support for custom Base URL and model
+1. **Scenelet Agent** — Configure Anthropic API Key (powers the AI assistant), with support for custom Base URL and model
 2. **AI Image/Video Generation** — Configure at least one provider's API Key (Gemini / Volcengine Ark / Grok / OpenAI), or add a custom provider
 
 > 📖 For detailed steps, see the [Getting Started Guide](docs/getting-started.md)
@@ -136,7 +136,7 @@ After first launch, log in with the default account (username `admin`, password 
 
 ## Provider Support
 
-ArcReel supports multiple built-in and custom providers through unified `ImageBackend` / `VideoBackend` / `TextBackend` protocols, switchable at global or project level:
+Scenelet supports multiple built-in and custom providers through unified `ImageBackend` / `VideoBackend` / `TextBackend` protocols, switchable at global or project level:
 
 ### Image Providers
 
@@ -177,7 +177,7 @@ Provider selection priority: Project-level settings > Global defaults. When swit
 
 ## AI Assistant Architecture
 
-ArcReel's AI assistant is built on the Claude Agent SDK, using an **Orchestration Skill + Focused Subagent** multi-agent architecture:
+Scenelet's AI assistant is built on the Claude Agent SDK, using an **Orchestration Skill + Focused Subagent** multi-agent architecture:
 
 ```mermaid
 flowchart TD
@@ -203,10 +203,10 @@ flowchart TD
 
 ## OpenClaw Integration
 
-ArcReel supports invocation through external AI Agent platforms like [OpenClaw](https://openclaw.ai), enabling natural language-driven video creation:
+Scenelet supports invocation through external AI Agent platforms like [OpenClaw](https://openclaw.ai), enabling natural language-driven video creation:
 
-1. Generate an API Key in ArcReel's Settings page (`arc-` prefix)
-2. Load ArcReel's Skill definition in OpenClaw (access `http://your-domain/skill.md` to auto-fetch)
+1. Generate an API Key in Scenelet's Settings page (`arc-` prefix)
+2. Load Scenelet's Skill definition in OpenClaw (access `http://your-domain/skill.md` to auto-fetch)
 3. Create projects, generate scripts, and produce videos through OpenClaw conversations
 
 Technical implementation: API Key authentication (Bearer Token) + synchronous Agent chat endpoint (`POST /api/v1/agent/chat`), internally connects to SSE streaming assistant and collects complete responses.

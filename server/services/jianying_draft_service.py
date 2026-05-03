@@ -1,6 +1,6 @@
 """剪映草稿导出服务
 
-将 ArcReel 单集已生成的视频片段导出为剪映草稿 ZIP。
+将 Scenelet 单集已生成的视频片段导出为剪映草稿 ZIP。
 使用 pyJianYingDraft 库生成 draft_content.json，
 后处理路径替换使草稿指向用户本地剪映目录。
 """

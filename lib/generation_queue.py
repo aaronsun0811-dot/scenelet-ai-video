@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from lib.db import safe_session_factory
@@ -24,6 +25,7 @@ TASK_POLL_INTERVAL_SEC = 1.0
 
 _QUEUE_LOCK = threading.Lock()
 _QUEUE_INSTANCE: GenerationQueue | None = None
+TaskPayloadRefresh = Callable[[dict[str, Any], dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
 class GenerationQueue:
@@ -109,38 +111,58 @@ class GenerationQueue:
             logger.warning("任务失败 task_id=%s error=%s", task_id, error_message[:200])
         return task
 
-    async def cancel_task(self, task_id: str) -> dict[str, Any]:
+    async def retry_failed_task(
+        self,
+        task_id: str,
+        *,
+        user_id: str | None = None,
+        payload_refresh: TaskPayloadRefresh | None = None,
+    ) -> dict[str, Any]:
         async with self._session_factory() as session:
             repo = TaskRepository(session)
-            result = await repo.cancel_task(task_id)
+            result = await repo.retry_failed_task(
+                task_id,
+                user_id=user_id,
+                payload_refresh=payload_refresh,
+            )
+        if result.get("deduped"):
+            logger.info("失败任务重试命中已有活动任务 task_id=%s existing=%s", task_id, result.get("task_id"))
+        else:
+            logger.info("失败任务已重新入队 original_task_id=%s new_task_id=%s", task_id, result.get("task_id"))
+        return result
+
+    async def cancel_task(self, task_id: str, *, user_id: str | None = None) -> dict[str, Any]:
+        async with self._session_factory() as session:
+            repo = TaskRepository(session)
+            result = await repo.cancel_task(task_id, user_id=user_id)
         cancelled_count = len(result.get("cancelled", []))
         if cancelled_count > 0:
             logger.info("任务取消 task_id=%s 共取消 %d 个", task_id, cancelled_count)
         return result
 
-    async def get_cancel_preview(self, task_id: str) -> dict[str, Any]:
+    async def get_cancel_preview(self, task_id: str, *, user_id: str | None = None) -> dict[str, Any]:
         async with self._session_factory() as session:
             repo = TaskRepository(session)
-            return await repo.get_cancel_preview(task_id)
+            return await repo.get_cancel_preview(task_id, user_id=user_id)
 
-    async def cancel_all_queued(self, project_name: str) -> dict[str, Any]:
+    async def cancel_all_queued(self, project_name: str, *, user_id: str | None = None) -> dict[str, Any]:
         async with self._session_factory() as session:
             repo = TaskRepository(session)
-            result = await repo.cancel_all_queued(project_name)
+            result = await repo.cancel_all_queued(project_name, user_id=user_id)
         if result["cancelled_count"] > 0:
             logger.info("批量取消 project=%s 共取消 %d 个", project_name, result["cancelled_count"])
         return result
 
-    async def get_cancel_all_preview(self, project_name: str) -> int:
+    async def get_cancel_all_preview(self, project_name: str, *, user_id: str | None = None) -> int:
         async with self._session_factory() as session:
             repo = TaskRepository(session)
-            return await repo.get_cancel_all_preview(project_name)
+            return await repo.get_cancel_all_preview(project_name, user_id=user_id)
 
-    async def get_task(self, task_id: str) -> dict[str, Any] | None:
+    async def get_task(self, task_id: str, *, user_id: str | None = None) -> dict[str, Any] | None:
 
         async with self._session_factory() as session:
             repo = TaskRepository(session)
-            return await repo.get(task_id)
+            return await repo.get(task_id, user_id=user_id)
 
     async def list_tasks(
         self,
@@ -149,6 +171,7 @@ class GenerationQueue:
         status: str | None = None,
         task_type: str | None = None,
         source: str | None = None,
+        user_id: str | None = None,
         page: int = 1,
         page_size: int = 50,
     ) -> dict[str, Any]:
@@ -160,20 +183,22 @@ class GenerationQueue:
                 status=status,
                 task_type=task_type,
                 source=source,
+                user_id=user_id,
                 page=page,
                 page_size=page_size,
             )
 
-    async def get_task_stats(self, project_name: str | None = None) -> dict[str, int]:
+    async def get_task_stats(self, project_name: str | None = None, *, user_id: str | None = None) -> dict[str, int]:
 
         async with self._session_factory() as session:
             repo = TaskRepository(session)
-            return await repo.get_stats(project_name=project_name)
+            return await repo.get_stats(project_name=project_name, user_id=user_id)
 
     async def get_recent_tasks_snapshot(
         self,
         *,
         project_name: str | None = None,
+        user_id: str | None = None,
         limit: int = 200,
     ) -> list[dict[str, Any]]:
 
@@ -181,6 +206,7 @@ class GenerationQueue:
             repo = TaskRepository(session)
             return await repo.get_recent_tasks_snapshot(
                 project_name=project_name,
+                user_id=user_id,
                 limit=limit,
             )
 
@@ -189,6 +215,7 @@ class GenerationQueue:
         *,
         last_event_id: int,
         project_name: str | None = None,
+        user_id: str | None = None,
         limit: int = 200,
     ) -> list[dict[str, Any]]:
 
@@ -197,14 +224,15 @@ class GenerationQueue:
             return await repo.get_events_since(
                 last_event_id=last_event_id,
                 project_name=project_name,
+                user_id=user_id,
                 limit=limit,
             )
 
-    async def get_latest_event_id(self, *, project_name: str | None = None) -> int:
+    async def get_latest_event_id(self, *, project_name: str | None = None, user_id: str | None = None) -> int:
 
         async with self._session_factory() as session:
             repo = TaskRepository(session)
-            return await repo.get_latest_event_id(project_name=project_name)
+            return await repo.get_latest_event_id(project_name=project_name, user_id=user_id)
 
     async def acquire_or_renew_worker_lease(
         self,

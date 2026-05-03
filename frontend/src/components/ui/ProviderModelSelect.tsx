@@ -1,4 +1,5 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo, useId } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, Check } from "lucide-react";
 import { ProviderIcon } from "@/components/ui/ProviderIcon";
@@ -7,6 +8,7 @@ interface ProviderModelSelectProps {
   value: string; // "gemini-aistudio/veo-3.1-generate-001"
   options: string[]; // ["gemini-aistudio/veo-3.1-generate-001", ...]
   providerNames: Record<string, string>; // {"gemini-aistudio": "Gemini AI Studio", ...}
+  optionLabels?: Record<string, string>; // {"provider/model": "Display label"}
   onChange: (value: string) => void;
   placeholder?: string;
   className?: string;
@@ -39,12 +41,18 @@ function groupByProvider(options: string[]): Record<string, string[]> {
   return groups;
 }
 
-const LISTBOX_ID = "provider-model-listbox";
+interface DropdownPosition {
+  left: number;
+  top: number;
+  width: number;
+  maxHeight: number;
+}
 
 export function ProviderModelSelect({
   value,
   options,
   providerNames,
+  optionLabels,
   onChange,
   placeholder,
   className,
@@ -58,7 +66,11 @@ export function ProviderModelSelect({
   const resolvedPlaceholder = placeholder ?? t("select_model_placeholder");
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
+  const [dropdownPosition, setDropdownPosition] = useState<DropdownPosition | null>(null);
+  const reactId = useId();
+  const listboxId = `provider-model-listbox-${reactId.replaceAll(":", "")}`;
   const containerRef = useRef<HTMLDivElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const itemRefs = useRef<Map<number, HTMLButtonElement>>(new Map());
 
@@ -88,7 +100,10 @@ export function ProviderModelSelect({
   // Close on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      const insideTrigger = !!containerRef.current?.contains(target);
+      const insideDropdown = !!dropdownRef.current?.contains(target);
+      if (!insideTrigger && !insideDropdown) {
         setOpen(false);
       }
     };
@@ -103,6 +118,37 @@ export function ProviderModelSelect({
       setActiveIndex(idx >= 0 ? idx : 0);
     }
   }, [open, flatOptions, value]);
+
+  const updateDropdownPosition = useCallback(() => {
+    const trigger = triggerRef.current;
+    if (!trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    const gap = 4;
+    const viewportPadding = 8;
+    const preferredHeight = 240;
+    const spaceBelow = window.innerHeight - rect.bottom - viewportPadding;
+    const spaceAbove = rect.top - viewportPadding;
+    const openUp = spaceBelow < 160 && spaceAbove > spaceBelow;
+    const availableHeight = Math.max(120, (openUp ? spaceAbove : spaceBelow) - gap);
+    const maxHeight = Math.min(preferredHeight, availableHeight);
+    setDropdownPosition({
+      left: Math.max(viewportPadding, rect.left),
+      top: openUp ? Math.max(viewportPadding, rect.top - maxHeight - gap) : rect.bottom + gap,
+      width: rect.width,
+      maxHeight,
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    updateDropdownPosition();
+    window.addEventListener("resize", updateDropdownPosition);
+    window.addEventListener("scroll", updateDropdownPosition, true);
+    return () => {
+      window.removeEventListener("resize", updateDropdownPosition);
+      window.removeEventListener("scroll", updateDropdownPosition, true);
+    };
+  }, [open, updateDropdownPosition]);
 
   // Scroll active item into view
   useEffect(() => {
@@ -125,6 +171,7 @@ export function ProviderModelSelect({
       if (!open) {
         if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Enter" || e.key === " ") {
           e.preventDefault();
+          updateDropdownPosition();
           setOpen(true);
           return;
         }
@@ -133,18 +180,22 @@ export function ProviderModelSelect({
 
       switch (e.key) {
         case "ArrowDown":
+          if (flatOptions.length === 0) break;
           e.preventDefault();
           setActiveIndex((prev) => (prev + 1) % flatOptions.length);
           break;
         case "ArrowUp":
+          if (flatOptions.length === 0) break;
           e.preventDefault();
           setActiveIndex((prev) => (prev - 1 + flatOptions.length) % flatOptions.length);
           break;
         case "Home":
+          if (flatOptions.length === 0) break;
           e.preventDefault();
           setActiveIndex(0);
           break;
         case "End":
+          if (flatOptions.length === 0) break;
           e.preventDefault();
           setActiveIndex(flatOptions.length - 1);
           break;
@@ -162,7 +213,7 @@ export function ProviderModelSelect({
           break;
       }
     },
-    [open, flatOptions, activeIndex, selectOption],
+    [open, flatOptions, activeIndex, selectOption, updateDropdownPosition],
   );
 
   const slashIdx = value ? value.indexOf("/") : -1;
@@ -175,13 +226,15 @@ export function ProviderModelSelect({
   const showFallback = !value && fbSlashIdx !== -1;
 
   const displayText = value
-    ? `${providerNames[currentProvider] || currentProvider} · ${currentModel}`
+    ? optionLabels?.[value] ?? `${providerNames[currentProvider] || currentProvider} · ${currentModel}`
     : showFallback
-      ? `${t("follow_global_default")} · ${providerNames[fbProvider] || fbProvider} · ${fbModel}`
+      ? `${t("follow_global_default")} · ${
+        optionLabels?.[fallbackValue!] ?? `${providerNames[fbProvider] || fbProvider} · ${fbModel}`
+      }`
       : resolvedPlaceholder;
 
   const activeDescendantId =
-    open && flatOptions.length > 0 ? `${LISTBOX_ID}-option-${activeIndex}` : undefined;
+    open && flatOptions.length > 0 ? `${listboxId}-option-${activeIndex}` : undefined;
 
   // Track flat index across grouped rendering
   let flatIdx = allowDefault ? 1 : 0;
@@ -195,10 +248,13 @@ export function ProviderModelSelect({
         role="combobox"
         aria-expanded={open}
         aria-haspopup="listbox"
-        aria-controls={LISTBOX_ID}
+        aria-controls={listboxId}
         aria-activedescendant={activeDescendantId}
         aria-label={ariaLabel}
-        onClick={() => setOpen(!open)}
+        onClick={() => {
+          updateDropdownPosition();
+          setOpen((next) => !next);
+        }}
         onKeyDown={handleKeyDown}
         className="flex w-full items-center justify-between gap-2 rounded-lg border border-gray-700 bg-gray-900/80 px-3 py-2 text-sm text-gray-200 transition-colors hover:border-gray-600 hover:bg-gray-800/80 focus-ring focus-visible:ring-offset-1 focus-visible:ring-offset-gray-900"
       >
@@ -209,12 +265,19 @@ export function ProviderModelSelect({
       </button>
 
       {/* Dropdown panel */}
-      {open && (
+      {open && dropdownPosition && createPortal(
         <div
-          id={LISTBOX_ID}
+          ref={dropdownRef}
+          id={listboxId}
           role="listbox"
           aria-label={t("select_model_aria")}
-          className="absolute z-50 mt-1 w-full max-h-60 overflow-y-auto rounded-lg border border-gray-700 bg-gray-900 shadow-xl"
+          style={{
+            left: dropdownPosition.left,
+            top: dropdownPosition.top,
+            width: dropdownPosition.width,
+            maxHeight: dropdownPosition.maxHeight,
+          }}
+          className="fixed z-[1000] overflow-y-auto rounded-lg border border-gray-700 bg-gray-900 shadow-xl"
         >
           {allowDefault && (
             <button
@@ -222,7 +285,7 @@ export function ProviderModelSelect({
                 if (el) itemRefs.current.set(0, el);
                 else itemRefs.current.delete(0);
               }}
-              id={`${LISTBOX_ID}-option-0`}
+              id={`${listboxId}-option-0`}
               role="option"
               aria-selected={value === ""}
               type="button"
@@ -253,6 +316,7 @@ export function ProviderModelSelect({
               {models.map((model) => {
                 const currentFlatIdx = flatIdx++;
                 const fullValue = `${providerId}/${model}`;
+                const optionLabel = optionLabels?.[fullValue] ?? model;
                 const isSelected = fullValue === value;
                 const isActive = currentFlatIdx === activeIndex;
                 return (
@@ -262,7 +326,7 @@ export function ProviderModelSelect({
                       if (el) itemRefs.current.set(currentFlatIdx, el);
                       else itemRefs.current.delete(currentFlatIdx);
                     }}
-                    id={`${LISTBOX_ID}-option-${currentFlatIdx}`}
+                    id={`${listboxId}-option-${currentFlatIdx}`}
                     role="option"
                     aria-selected={isSelected}
                     type="button"
@@ -279,13 +343,14 @@ export function ProviderModelSelect({
                     ) : (
                       <span className="h-3.5 w-3.5 shrink-0" />
                     )}
-                    <span className="truncate">{model}</span>
+                    <span className="truncate">{optionLabel}</span>
                   </button>
                 );
               })}
             </div>
           ))}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

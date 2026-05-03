@@ -14,6 +14,9 @@ class _FakePM:
 
         return Path("/tmp") / project_name
 
+    def load_project(self, project_name):
+        return {"name": project_name, "owner_user_id": "default"}
+
     def _update_asset_sheet(self, asset_type, *args):
         self.updated.append((asset_type, args))
 
@@ -52,6 +55,9 @@ class _StoryboardSyncPM:
 
     def get_project_path(self, project_name):
         return self.project_path
+
+    def load_project(self, project_name):
+        return {"name": project_name, "owner_user_id": "default"}
 
     def update_scene_asset(self, project_name, script_filename, scene_id, asset_type, asset_path):
         self.update_calls.append(script_filename)

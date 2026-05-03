@@ -1,12 +1,12 @@
 <h1 align="center">
   <br>
   <picture>
-    <source media="(prefers-color-scheme: light)" srcset="frontend/public/android-chrome-maskable-512x512.png">
-    <source media="(prefers-color-scheme: dark)" srcset="frontend/public/android-chrome-512x512.png">
-    <img src="frontend/public/android-chrome-maskable-512x512.png" alt="ArcReel Logo" width="128" style="border-radius: 16px;">
+    <source media="(prefers-color-scheme: light)" srcset="frontend/public/scenelet-logo-maskable-512.png">
+    <source media="(prefers-color-scheme: dark)" srcset="frontend/public/scenelet-logo-512.png">
+    <img src="frontend/public/scenelet-logo-maskable-512.png" alt="Scenelet Logo" width="128" style="border-radius: 16px;">
   </picture>
   <br>
-  ArcReel
+  Scenelet
   <br>
 </h1>
 
@@ -19,10 +19,10 @@
 
 <p align="center">
   <a href="#快速开始"><img src="https://img.shields.io/badge/Quick_Start-blue?style=for-the-badge" alt="Quick Start"></a>
-  <a href="https://github.com/ArcReel/ArcReel/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0-green?style=for-the-badge" alt="License"></a>
-  <a href="https://github.com/ArcReel/ArcReel"><img src="https://img.shields.io/github/stars/ArcReel/ArcReel?style=for-the-badge" alt="Stars"></a>
-  <a href="https://github.com/ArcReel/ArcReel/pkgs/container/arcreel"><img src="https://img.shields.io/badge/Docker-ghcr.io-blue?style=for-the-badge&logo=docker" alt="Docker"></a>
-  <a href="https://github.com/ArcReel/ArcReel/actions/workflows/test.yml"><img src="https://img.shields.io/github/actions/workflow/status/ArcReel/ArcReel/test.yml?style=for-the-badge&label=Tests" alt="Tests"></a>
+  <a href="https://github.com/Scenelet/Scenelet/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0-green?style=for-the-badge" alt="License"></a>
+  <a href="https://github.com/Scenelet/Scenelet"><img src="https://img.shields.io/github/stars/Scenelet/Scenelet?style=for-the-badge" alt="Stars"></a>
+  <a href="https://github.com/Scenelet/Scenelet/pkgs/container/arcreel"><img src="https://img.shields.io/badge/Docker-ghcr.io-blue?style=for-the-badge&logo=docker" alt="Docker"></a>
+  <a href="https://github.com/Scenelet/Scenelet/actions/workflows/test.yml"><img src="https://img.shields.io/github/actions/workflow/status/Scenelet/Scenelet/test.yml?style=for-the-badge&label=Tests" alt="Tests"></a>
 </p>
 
 <p align="center">
@@ -37,7 +37,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/hero-screenshot.png" alt="ArcReel 工作台" width="800">
+  <img src="docs/assets/hero-screenshot.png" alt="Scenelet 工作台" width="800">
 </p>
 
 ---
@@ -92,8 +92,8 @@ graph TD
 ### 默认部署（SQLite）
 
 ```bash
-git clone https://github.com/ArcReel/ArcReel.git
-cd ArcReel/deploy
+git clone https://github.com/Scenelet/Scenelet.git
+cd Scenelet/deploy
 cp .env.example .env
 docker compose up -d
 # 访问 http://localhost:1241
@@ -102,14 +102,14 @@ docker compose up -d
 ### 生产部署（PostgreSQL）
 
 ```bash
-cd ArcReel/deploy/production
+cd Scenelet/deploy/production
 cp .env.example .env    # 需设置 POSTGRES_PASSWORD
 docker compose up -d
 ```
 
 首次启动后，使用默认账号登录（用户名 `admin`，密码在 `.env` 中通过 `AUTH_PASSWORD` 设置；未设置则首次启动时自动生成并回写到 `.env`），前往 **设置页**（`/settings`）完成配置：
 
-1. **ArcReel 智能体** — 配置 Anthropic API Key（驱动 AI 助手），支持自定义 Base URL 和模型
+1. **Scenelet 智能体** — 配置 Anthropic API Key（驱动 AI 助手），支持自定义 Base URL 和模型
 2. **AI 生图/生视频** — 配置至少一个供应商的 API Key（Gemini / 火山方舟 / Grok / OpenAI），或添加自定义供应商
 
 > 📖 详细步骤请参考 [完整入门教程](docs/getting-started.md)
@@ -136,7 +136,7 @@ docker compose up -d
 
 ## 供应商支持
 
-ArcReel 通过统一的 `ImageBackend` / `VideoBackend` / `TextBackend` 协议，支持多个预置供应商和自定义供应商，可在全局或项目级别切换：
+Scenelet 通过统一的 `ImageBackend` / `VideoBackend` / `TextBackend` 协议，支持多个预置供应商和自定义供应商，可在全局或项目级别切换：
 
 ### 图片供应商
 
@@ -185,7 +185,7 @@ ArcReel 通过统一的 `ImageBackend` / `VideoBackend` / `TextBackend` 协议�
 
 ## AI 助手架构
 
-ArcReel 的 AI 助手基于 Claude Agent SDK 构建，采用**编排 Skill + 聚焦 Subagent** 的多智能体架构：
+Scenelet 的 AI 助手基于 Claude Agent SDK 构建，采用**编排 Skill + 聚焦 Subagent** 的多智能体架构：
 
 ```mermaid
 flowchart TD
@@ -211,10 +211,10 @@ flowchart TD
 
 ## OpenClaw 集成
 
-ArcReel 支持通过 [OpenClaw](https://openclaw.ai) 等外部 AI Agent 平台调用，实现自然语言驱动的视频创作：
+Scenelet 支持通过 [OpenClaw](https://openclaw.ai) 等外部 AI Agent 平台调用，实现自然语言驱动的视频创作：
 
-1. 在 ArcReel 设置页生成 API Key（`arc-` 前缀）
-2. 在 OpenClaw 中加载 ArcReel 的 Skill 定义（访问 `http://your-domain/skill.md` 自动获取）
+1. 在 Scenelet 设置页生成 API Key（`arc-` 前缀）
+2. 在 OpenClaw 中加载 Scenelet 的 Skill 定义（访问 `http://your-domain/skill.md` 自动获取）
 3. 通过 OpenClaw 对话即可创建项目、生成剧本、制作视频
 
 技术实现：API Key 认证（Bearer Token）+ 同步 Agent 对话端点（`POST /api/v1/agent/chat`），内部对接 SSE 流式助手并收集完整响应返回。

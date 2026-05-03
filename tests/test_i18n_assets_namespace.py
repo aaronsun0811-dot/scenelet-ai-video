@@ -23,6 +23,8 @@ def test_all_asset_keys_registered_in_both_locales():
         "asset_target_project_not_found",
         "asset_load_project_failed",
         "asset_invalid_conflict_policy",
+        "asset_invalid_project_file",
+        "asset_project_file_not_found",
     }
     for key in expected:
         assert key in MESSAGES["zh"], f"missing zh key: {key}"

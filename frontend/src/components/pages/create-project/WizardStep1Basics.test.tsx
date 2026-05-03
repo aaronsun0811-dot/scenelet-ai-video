@@ -5,8 +5,10 @@ import { WizardStep1Basics } from "./WizardStep1Basics";
 
 const baseValue = {
   title: "",
-  contentMode: "narration" as const,
-  aspectRatio: "9:16" as const,
+  contentType: "scene_sketch" as const,
+  billingMode: "byok" as const,
+  contentMode: "drama" as const,
+  aspectRatio: "16:9" as const,
   generationMode: "storyboard" as const,
 };
 
@@ -49,7 +51,19 @@ describe("WizardStep1Basics", () => {
     expect(onNext).toHaveBeenCalledOnce();
   });
 
-  it("emits onChange when content mode changes", () => {
+  it("does not expose the immutable content mode as a separate create-time override", () => {
+    render(
+      <WizardStep1Basics
+        value={baseValue}
+        onChange={() => {}}
+        onNext={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    expect(screen.queryByRole("radiogroup", { name: /内容模式|Content Mode/ })).not.toBeInTheDocument();
+  });
+
+  it("emits onChange when content type changes", () => {
     const onChange = vi.fn();
     render(
       <WizardStep1Basics
@@ -59,10 +73,63 @@ describe("WizardStep1Basics", () => {
         onCancel={() => {}}
       />,
     );
-    // click drama option (剧集模式)
-    fireEvent.click(screen.getByText(/剧集模式|Drama Mode/));
+    fireEvent.click(screen.getByText(/短剧|Short Drama/));
     expect(onChange).toHaveBeenCalledWith(
-      expect.objectContaining({ contentMode: "drama" }),
+      expect.objectContaining({
+        contentType: "short_drama",
+        contentMode: "drama",
+        aspectRatio: "9:16",
+        generationMode: "storyboard",
+      }),
+    );
+  });
+
+  it("emits travel video defaults while still allowing portrait override afterwards", () => {
+    const onChange = vi.fn();
+    const { rerender } = render(
+      <WizardStep1Basics
+        value={baseValue}
+        onChange={onChange}
+        onNext={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByText(/旅游视频|Travel Video/));
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contentType: "travel_video",
+        contentMode: "narration",
+        aspectRatio: "16:9",
+        generationMode: "reference_video",
+      }),
+    );
+
+    onChange.mockClear();
+    rerender(
+      <WizardStep1Basics
+        value={{ ...baseValue, contentType: "travel_video", contentMode: "narration", aspectRatio: "16:9", generationMode: "reference_video" }}
+        onChange={onChange}
+        onNext={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole("radio", { name: /竖屏 9:16|Portrait 9:16/ }));
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ aspectRatio: "9:16" }));
+  });
+
+  it("emits onChange when billing mode changes", () => {
+    const onChange = vi.fn();
+    render(
+      <WizardStep1Basics
+        value={baseValue}
+        onChange={onChange}
+        onNext={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByText(/平台积分|Platform Credits/));
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({ billingMode: "platform_credits" }),
     );
   });
 
@@ -76,10 +143,9 @@ describe("WizardStep1Basics", () => {
         onCancel={() => {}}
       />,
     );
-    // click 横屏 16:9
-    fireEvent.click(screen.getByText(/横屏/));
+    fireEvent.click(screen.getByRole("radio", { name: /竖屏 9:16|Portrait 9:16/ }));
     expect(onChange).toHaveBeenCalledWith(
-      expect.objectContaining({ aspectRatio: "16:9" }),
+      expect.objectContaining({ aspectRatio: "9:16" }),
     );
   });
 
@@ -162,7 +228,7 @@ describe("WizardStep1Basics", () => {
     const onChange = vi.fn();
     render(
       <WizardStep1Basics
-        value={{ title: "t", contentMode: "narration", aspectRatio: "9:16", generationMode: "storyboard" }}
+        value={{ title: "t", contentType: "scene_sketch", billingMode: "byok", contentMode: "narration", aspectRatio: "9:16", generationMode: "storyboard" }}
         onChange={onChange}
         onNext={() => {}}
         onCancel={() => {}}

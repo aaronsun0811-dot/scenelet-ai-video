@@ -1,11 +1,12 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { errMsg, voidCall } from "@/utils/async";
-import { ChevronDown, Eye, EyeOff, Loader2, SlidersHorizontal, Terminal, X } from "lucide-react";
+import { Bot, ChevronDown, Eye, EyeOff, Loader2, SlidersHorizontal, Terminal, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useWarnUnsaved } from "@/hooks/useWarnUnsaved";
-import ClaudeColor from "@lobehub/icons/es/Claude/components/Color";
 import { API } from "@/api";
+import { ProviderModelSelect } from "@/components/ui/ProviderModelSelect";
+import { ProviderIcon, PROVIDER_NAMES } from "@/components/ui/ProviderIcon";
 import { useAppStore } from "@/stores/app-store";
 import { useConfigStatusStore } from "@/stores/config-status-store";
 import type { GetSystemConfigResponse, SystemConfigPatch } from "@/types";
@@ -18,6 +19,7 @@ import { TabSaveFooter } from "./TabSaveFooter";
 interface AgentDraft {
   anthropicKey: string;        // new API key input (empty = don't change)
   anthropicBaseUrl: string;    // in-place editing; empty = clear
+  agentModelBackend: string;   // provider/model selection for Scenelet agent
   anthropicModel: string;      // in-place editing; empty = clear
   haikuModel: string;
   opusModel: string;
@@ -32,6 +34,7 @@ function buildDraft(data: GetSystemConfigResponse): AgentDraft {
   return {
     anthropicKey: "",
     anthropicBaseUrl: s.anthropic_base_url ?? "",
+    agentModelBackend: s.agent_model_backend ?? "",
     anthropicModel: s.anthropic_model ?? "",
     haikuModel: s.anthropic_default_haiku_model ?? "",
     opusModel: s.anthropic_default_opus_model ?? "",
@@ -46,6 +49,7 @@ function deepEqual(a: AgentDraft, b: AgentDraft): boolean {
   return (
     a.anthropicKey === b.anthropicKey &&
     a.anthropicBaseUrl === b.anthropicBaseUrl &&
+    a.agentModelBackend === b.agentModelBackend &&
     a.anthropicModel === b.anthropicModel &&
     a.haikuModel === b.haikuModel &&
     a.opusModel === b.opusModel &&
@@ -61,6 +65,8 @@ function buildPatch(draft: AgentDraft, saved: AgentDraft): SystemConfigPatch {
   if (draft.anthropicKey.trim()) patch.anthropic_api_key = draft.anthropicKey.trim();
   if (draft.anthropicBaseUrl !== saved.anthropicBaseUrl)
     patch.anthropic_base_url = draft.anthropicBaseUrl || "";
+  if (draft.agentModelBackend !== saved.agentModelBackend)
+    patch.agent_model_backend = draft.agentModelBackend || "";
   if (draft.anthropicModel !== saved.anthropicModel)
     patch.anthropic_model = draft.anthropicModel || "";
   if (draft.haikuModel !== saved.haikuModel)
@@ -124,6 +130,71 @@ const MODEL_ROUTING_FIELDS = [
 const inlineClearClassName =
   "ml-1.5 inline-flex items-center rounded p-0.5 text-gray-600 transition-colors hover:text-rose-400 disabled:cursor-not-allowed disabled:opacity-50";
 
+const BUILTIN_AGENT_BACKENDS = [
+  "anthropic/claude-opus-4-7",
+  "anthropic/claude-sonnet-4-6",
+  "anthropic/claude-haiku-4-5-20251001",
+  "anthropic/claude-sonnet-4-5-20250929",
+  "anthropic/claude-opus-4-1-20250805",
+  "anthropic/claude-opus-4-6",
+  "openai/gpt-5.5",
+  "openai/gpt-5.4",
+  "openai/gpt-5.4-mini",
+  "gemini-aistudio/gemini-3.1-pro-preview",
+  "gemini-aistudio/gemini-3-flash-preview",
+  "gemini-aistudio/gemini-3.1-flash-lite-preview",
+  "gemini-vertex/gemini-3.1-pro-preview",
+  "gemini-vertex/gemini-3-flash-preview",
+  "ark/doubao-seed-2-0-pro-260215",
+  "ark/doubao-seed-2-0-lite-260215",
+  "baidu/ernie-4.5-turbo-128k",
+  "qwen/qwen-plus",
+  "qwen/qwen-max",
+  "zhipu/glm-4.5",
+  "deepseek/deepseek-chat",
+  "deepseek/deepseek-reasoner",
+  "moonshot/kimi-latest",
+  "moonshot/kimi-k2",
+  "minimax/minimax-text-01",
+  "hunyuan/hunyuan-turbo",
+] as const;
+const AGENT_PROVIDER_ORDER = [
+  "anthropic",
+  "openai",
+  "gemini-aistudio",
+  "gemini-vertex",
+  "ark",
+  "deepseek",
+  "qwen",
+  "moonshot",
+  "zhipu",
+  "baidu",
+  "minimax",
+  "hunyuan",
+] as const;
+
+function modelIdFromBackend(value: string): string {
+  const slashIndex = value.indexOf("/");
+  return slashIndex === -1 ? value.trim() : value.slice(slashIndex + 1).trim();
+}
+
+function providerIdFromBackend(value: string): string {
+  const slashIndex = value.indexOf("/");
+  return slashIndex === -1 ? value.trim() : value.slice(0, slashIndex).trim();
+}
+
+function sortAgentBackends(options: string[]): string[] {
+  const providerRank = new Map<string, number>(AGENT_PROVIDER_ORDER.map((provider, index) => [provider, index]));
+  return [...options].sort((a, b) => {
+    const providerA = a.split("/", 1)[0];
+    const providerB = b.split("/", 1)[0];
+    const rankA = providerRank.get(providerA) ?? 999;
+    const rankB = providerRank.get(providerB) ?? 999;
+    if (rankA !== rankB) return rankA - rankB;
+    return a.localeCompare(b);
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
@@ -152,6 +223,7 @@ export function AgentConfigTab({ visible }: AgentConfigTabProps) {
   const [draft, setDraft] = useState<AgentDraft>({
     anthropicKey: "",
     anthropicBaseUrl: "",
+    agentModelBackend: "",
     anthropicModel: "",
     haikuModel: "",
     opusModel: "",
@@ -163,6 +235,7 @@ export function AgentConfigTab({ visible }: AgentConfigTabProps) {
   const savedRef = useRef<AgentDraft>({
     anthropicKey: "",
     anthropicBaseUrl: "",
+    agentModelBackend: "",
     anthropicModel: "",
     haikuModel: "",
     opusModel: "",
@@ -203,6 +276,25 @@ export function AgentConfigTab({ visible }: AgentConfigTabProps) {
     },
     [],
   );
+
+  const handleAgentBackendChange = useCallback((value: string) => {
+    const modelId = modelIdFromBackend(value);
+    setDraft((prev) => ({
+      ...prev,
+      agentModelBackend: value,
+      anthropicModel: modelId,
+    }));
+    setSaveError(null);
+  }, []);
+
+  const handleManualModelChange = useCallback((value: string) => {
+    setDraft((prev) => ({
+      ...prev,
+      agentModelBackend: "",
+      anthropicModel: value,
+    }));
+    setSaveError(null);
+  }, []);
 
   const handleSave = useCallback(async () => {
     const patch = buildPatch(draft, savedRef.current);
@@ -279,6 +371,17 @@ export function AgentConfigTab({ visible }: AgentConfigTabProps) {
   }
 
   const settings = remoteData.settings;
+  const allProviderNames = { ...PROVIDER_NAMES, ...(remoteData.options.provider_names ?? {}) };
+  const remoteAgentBackends = remoteData.options.agent_backends ?? remoteData.options.text_backends ?? [];
+  const agentBackends = sortAgentBackends(
+    Array.from(new Set([...BUILTIN_AGENT_BACKENDS, ...remoteAgentBackends])),
+  );
+  const selectedAgentBackend = draft.agentModelBackend || settings.agent_model_backend || "";
+  const selectedProviderId = providerIdFromBackend(selectedAgentBackend);
+  const selectedProviderName = selectedProviderId
+    ? allProviderNames[selectedProviderId] || selectedProviderId
+    : t("agent_model_follow_default");
+  const isAnthropicAgentSelected = !selectedProviderId || selectedProviderId === "anthropic";
 
   return (
     <div className={visible ? undefined : "hidden"}>
@@ -287,7 +390,7 @@ export function AgentConfigTab({ visible }: AgentConfigTabProps) {
         <div>
           <div className="flex items-center gap-3">
             <div className="rounded-2xl border border-gray-800 bg-gray-900 p-3 shadow-inner shadow-white/5">
-              <ClaudeColor size={24} />
+              <Bot className="h-6 w-6 text-indigo-200" />
             </div>
             <div>
               <h2 className="text-lg font-semibold text-gray-100">{t("arcreel_agent")}</h2>
@@ -305,20 +408,92 @@ export function AgentConfigTab({ visible }: AgentConfigTabProps) {
         </div>
 
         {/* ----------------------------------------------------------------- */}
-        {/* Section 1: API Key + Base URL */}
+        {/* Section 1: Provider / Model */}
+        {/* ----------------------------------------------------------------- */}
+        <div>
+          <SectionHeading
+            title={t("model_config")}
+            description={t("model_config_desc")}
+          />
+
+          <div className={cardClassName}>
+            <div className="flex items-center justify-between">
+              <label className="text-sm font-medium text-gray-100">
+                {t("agent_model_backend")}
+              </label>
+              {(settings.agent_model_backend || settings.anthropic_model) && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    void handleClearField(
+                      "anthropic_model",
+                      { agent_model_backend: "", anthropic_model: "" },
+                      "agent_model_backend",
+                    )
+                  }
+                  disabled={isBusy}
+                  className="inline-flex items-center gap-1 rounded text-xs text-gray-600 transition-colors hover:text-rose-400 disabled:cursor-not-allowed disabled:opacity-50 focus-ring"
+                  aria-label={t("clear_saved_model")}
+                >
+                  {clearingField === "anthropic_model" ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <X className="h-3 w-3" />
+                  )}
+                  {t("clear_saved")}
+                </button>
+              )}
+            </div>
+            <p className="mt-0.5 text-xs text-gray-500">
+              {t("agent_model_backend_desc")}
+            </p>
+            <div className="mt-2">
+              <ProviderModelSelect
+                value={draft.agentModelBackend}
+                options={agentBackends}
+                providerNames={allProviderNames}
+                onChange={handleAgentBackendChange}
+                allowDefault
+                defaultLabel={t("agent_model_follow_default")}
+                defaultHint={t("agent_model_follow_default_hint")}
+                aria-label={t("agent_model_backend")}
+              />
+            </div>
+            <p className="mt-3 text-xs text-gray-500">
+              {t("agent_model_gateway_hint")}
+            </p>
+          </div>
+        </div>
+
+        {/* ----------------------------------------------------------------- */}
+        {/* Section 2: API Key + Base URL */}
         {/* ----------------------------------------------------------------- */}
         <div>
           <SectionHeading
             title={t("api_credentials")}
-            description={t("anthropic_key_required_desc")}
+            description={
+              isAnthropicAgentSelected
+                ? t("anthropic_key_required_desc")
+                : t("agent_gateway_required_desc", { provider: selectedProviderName })
+            }
           />
 
           {/* API Key card */}
           <div className={`${cardClassName} space-y-4`}>
+            <div className="flex items-center gap-2 rounded-lg border border-indigo-400/20 bg-indigo-500/10 px-3 py-2 text-xs text-indigo-100">
+              {selectedProviderId ? (
+                <ProviderIcon providerId={selectedProviderId} className="h-4 w-4 shrink-0" />
+              ) : (
+                <Bot className="h-4 w-4 shrink-0" />
+              )}
+              <span>
+                {t("agent_selected_provider_hint", { provider: selectedProviderName })}
+              </span>
+            </div>
             <div>
               <div className="flex items-center justify-between">
                 <label htmlFor="agent-anthropic-key" className="text-sm font-medium text-gray-100">
-                  {t("anthropic_api_key")}
+                  {isAnthropicAgentSelected ? t("anthropic_api_key") : t("agent_gateway_api_key")}
                 </label>
                 {settings.anthropic_api_key.is_set && (
                   <div className="flex items-center text-xs text-gray-500">
@@ -348,7 +523,9 @@ export function AgentConfigTab({ visible }: AgentConfigTabProps) {
                 )}
               </div>
               <p className="mt-0.5 text-xs text-gray-500">
-                {t("env_anthropic_api_key")}
+                {isAnthropicAgentSelected
+                  ? t("env_anthropic_api_key")
+                  : t("agent_gateway_key_hint", { provider: selectedProviderName })}
               </p>
               <div className="relative mt-2">
                 <input
@@ -356,7 +533,7 @@ export function AgentConfigTab({ visible }: AgentConfigTabProps) {
                   type={showKey ? "text" : "password"}
                   value={draft.anthropicKey}
                   onChange={(e) => updateDraft("anthropicKey", e.target.value)}
-                  placeholder="sk-ant-…"
+                  placeholder={isAnthropicAgentSelected ? "sk-ant-…" : t("agent_gateway_key_placeholder")}
                   className={`${inputClassName} pr-10`}
                   autoComplete="off"
                   spellCheck={false}
@@ -414,14 +591,14 @@ export function AgentConfigTab({ visible }: AgentConfigTabProps) {
                 )}
               </div>
               <p className="mt-0.5 text-xs text-gray-500">
-                {t("env_anthropic_base_url")}
+                {isAnthropicAgentSelected ? t("env_anthropic_base_url") : t("agent_gateway_base_url_hint")}
               </p>
               <div className="relative mt-2">
                 <input
                   id="agent-base-url"
                   value={draft.anthropicBaseUrl}
                   onChange={(e) => updateDraft("anthropicBaseUrl", e.target.value)}
-                  placeholder={t("api_base_example")}
+                  placeholder={isAnthropicAgentSelected ? t("api_base_example") : "https://your-claude-compatible-gateway.example.com"}
                   className={`${inputClassName}${draft.anthropicBaseUrl ? " pr-8" : ""}`}
                   autoComplete="off"
                   spellCheck={false}
@@ -444,50 +621,28 @@ export function AgentConfigTab({ visible }: AgentConfigTabProps) {
         </div>
 
         {/* ----------------------------------------------------------------- */}
-        {/* Section 2: Model Configuration */}
+        {/* Section 3: Default Model / Routing */}
         {/* ----------------------------------------------------------------- */}
         <div>
           <SectionHeading
-            title={t("model_config")}
-            description={t("model_config_desc")}
+            title={t("agent_default_model_routing")}
+            description={t("agent_default_model_routing_desc")}
           />
 
           <div className={cardClassName}>
-            <div className="flex items-center justify-between">
+            <div>
               <label htmlFor="agent-model" className="text-sm font-medium text-gray-100">
                 {t("default_model")}
               </label>
-              {settings.anthropic_model && (
-                <button
-                  type="button"
-                  onClick={() =>
-                    void handleClearField(
-                      "anthropic_model",
-                      { anthropic_model: "" },
-                      "default_model",
-                    )
-                  }
-                  disabled={isBusy}
-                  className="inline-flex items-center gap-1 rounded text-xs text-gray-600 transition-colors hover:text-rose-400 disabled:cursor-not-allowed disabled:opacity-50 focus-ring"
-                  aria-label={t("clear_saved_model")}
-                >
-                  {clearingField === "anthropic_model" ? (
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                  ) : (
-                    <X className="h-3 w-3" />
-                  )}
-                  {t("clear_saved")}
-                </button>
-              )}
+              <p className="mt-0.5 text-xs text-gray-500">
+                {t("env_anthropic_model")}
+              </p>
             </div>
-            <p className="mt-0.5 text-xs text-gray-500">
-              {t("env_anthropic_model")}
-            </p>
             <div className="relative mt-2">
               <input
                 id="agent-model"
                 value={draft.anthropicModel}
-                onChange={(e) => updateDraft("anthropicModel", e.target.value)}
+                onChange={(e) => handleManualModelChange(e.target.value)}
                 placeholder="claude-3-5-sonnet-20241022"
                 className={`${inputClassName}${draft.anthropicModel ? " pr-8" : ""}`}
                 autoComplete="off"
@@ -498,7 +653,7 @@ export function AgentConfigTab({ visible }: AgentConfigTabProps) {
               {draft.anthropicModel && (
                 <button
                   type="button"
-                  onClick={() => updateDraft("anthropicModel", "")}
+                  onClick={() => handleManualModelChange("")}
                   className={`absolute right-2 top-1/2 -translate-y-1/2 ${smallBtnClassName}`}
                   aria-label={t("clear_model_input")}
                 >

@@ -25,6 +25,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.config.resolver import ConfigResolver  # noqa: E402
+from lib.content_workflows import format_workflow_context, get_workflow_preset  # noqa: E402
 from lib.db import async_session_factory  # noqa: E402
 from lib.project_manager import ProjectManager  # noqa: E402
 from lib.text_backends.base import TextGenerationRequest, TextTaskType  # noqa: E402
@@ -45,6 +46,7 @@ def build_normalize_prompt(
     props: dict,
     default_duration: int | None,
     supported_durations: list[int],
+    workflow_instructions: str | None = None,
 ) -> str:
     """构建规范化剧本的 Prompt
 
@@ -72,6 +74,11 @@ def build_normalize_prompt(
         )
     else:
         duration_rules = f"- 时长：只能取 {durations_str} 中的值"
+    workflow_block = (
+        f"\n<workflow>\n{workflow_instructions.strip()}\n</workflow>\n"
+        if workflow_instructions and workflow_instructions.strip()
+        else ""
+    )
 
     return f"""你的任务是将小说原文改编为结构化的分镜场景表（Markdown 格式），用于后续 AI 视频生成。
 
@@ -100,6 +107,7 @@ def build_normalize_prompt(
 <props>
 {prop_list}
 </props>
+{workflow_block}
 
 ## 小说原文
 
@@ -119,6 +127,7 @@ def build_normalize_prompt(
 规则：
 - 场景 ID 格式：E{{集数}}S{{两位序号}}（如 E1S01, E1S02）
 - 场景描述：改编后的剧本化描述，包含角色动作、对话、环境，适合视觉化呈现
+- 如果提供 workflow，优先遵循其中的内容类型目标、结构规则和视觉规则
 {duration_rules}
 - 场景类型：剧情、动作、对话、过渡、空镜
 - segment_break：场景切换点标记"是"，同一连续场景标"否"
@@ -204,6 +213,10 @@ async def amain() -> None:
         sys.exit(1)
 
     default_duration, supported_durations = await _fetch_video_caps(project_name)
+    workflow_instructions = format_workflow_context(
+        get_workflow_preset(project.get("content_type")),
+        phase="script",
+    )
 
     prompt = build_normalize_prompt(
         novel_text=novel_text,
@@ -214,6 +227,7 @@ async def amain() -> None:
         props=project.get("props", {}),
         default_duration=default_duration,
         supported_durations=supported_durations,
+        workflow_instructions=workflow_instructions,
     )
 
     if args.dry_run:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 from lib.system_config import SystemConfigManager
@@ -43,3 +44,19 @@ class TestSystemConfigMigration:
         manager = self._make_manager(tmp_path)
         overrides = manager.read_overrides()
         assert "video_model" not in overrides
+
+    def test_invalid_json_warning_does_not_echo_config_contents(self, tmp_path, caplog):
+        config_path = tmp_path / "projects" / ".system_config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
+            '{"overrides":{"gemini_api_key":"AIza-SECRET-should-not-log",',
+            encoding="utf-8",
+        )
+        manager = self._make_manager(tmp_path)
+
+        with caplog.at_level(logging.WARNING, logger="lib.system_config"):
+            overrides = manager.read_overrides()
+
+        assert overrides == {}
+        assert "invalid JSON at line" in caplog.text
+        assert "AIza-SECRET-should-not-log" not in caplog.text

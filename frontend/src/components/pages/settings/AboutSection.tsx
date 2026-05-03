@@ -1,139 +1,270 @@
-import { useEffect, useState } from "react";
-import { ExternalLink, Info, RefreshCcw } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ExternalLink, Info, Loader2, RotateCcw, Save } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { API } from "@/api";
-import { StreamMarkdown } from "@/components/copilot/StreamMarkdown";
-import type { GetSystemVersionResponse } from "@/types";
+import { useWarnUnsaved } from "@/hooks/useWarnUnsaved";
+import { useAppStore } from "@/stores/app-store";
+import type { GetSystemConfigResponse, SystemConfigPatch } from "@/types";
+import { errMsg } from "@/utils/async";
 
-function formatDate(value: string, locale: string): string {
-  if (!value) return "-";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat(locale, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(date);
+interface AboutDraft {
+  title: string;
+  subtitle: string;
+  body: string;
+  contactLabel: string;
+  contactUrl: string;
+}
+
+function buildDraft(data: GetSystemConfigResponse): AboutDraft {
+  const settings = data.settings;
+  return {
+    title: settings.about_title ?? "",
+    subtitle: settings.about_subtitle ?? "",
+    body: settings.about_body ?? "",
+    contactLabel: settings.about_contact_label ?? "",
+    contactUrl: settings.about_contact_url ?? "",
+  };
+}
+
+function draftsEqual(a: AboutDraft, b: AboutDraft): boolean {
+  return (
+    a.title === b.title
+    && a.subtitle === b.subtitle
+    && a.body === b.body
+    && a.contactLabel === b.contactLabel
+    && a.contactUrl === b.contactUrl
+  );
+}
+
+function buildPatch(draft: AboutDraft, saved: AboutDraft): SystemConfigPatch {
+  const patch: SystemConfigPatch = {};
+  if (draft.title !== saved.title) patch.about_title = draft.title.trim();
+  if (draft.subtitle !== saved.subtitle) patch.about_subtitle = draft.subtitle.trim();
+  if (draft.body !== saved.body) patch.about_body = draft.body.trim();
+  if (draft.contactLabel !== saved.contactLabel) patch.about_contact_label = draft.contactLabel.trim();
+  if (draft.contactUrl !== saved.contactUrl) patch.about_contact_url = draft.contactUrl.trim();
+  return patch;
+}
+
+const inputClassName =
+  "w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-gray-100 outline-none transition-colors placeholder:text-gray-600 focus:border-indigo-400";
+
+function AboutPreview({ draft, emptyText }: { draft: AboutDraft; emptyText: string }) {
+  if (!(draft.title || draft.subtitle || draft.body || (draft.contactLabel && draft.contactUrl))) {
+    return <p className="text-sm text-gray-500">{emptyText}</p>;
+  }
+
+  return (
+    <div className="space-y-4">
+      {draft.title && <h3 className="text-2xl font-semibold text-white">{draft.title}</h3>}
+      {draft.subtitle && <p className="text-sm text-gray-400">{draft.subtitle}</p>}
+      {draft.body && (
+        <div className="whitespace-pre-wrap text-sm leading-6 text-gray-200">
+          {draft.body}
+        </div>
+      )}
+      {draft.contactLabel && draft.contactUrl && (
+        <a
+          href={draft.contactUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-1.5 text-sm text-sky-300 transition-colors hover:text-sky-200"
+        >
+          {draft.contactLabel}
+          <ExternalLink className="h-3.5 w-3.5" />
+        </a>
+      )}
+    </div>
+  );
 }
 
 export function AboutSection() {
-  const { t, i18n } = useTranslation("dashboard");
-  const [data, setData] = useState<GetSystemVersionResponse | null>(null);
+  const { t } = useTranslation("dashboard");
+  const savedRef = useRef<AboutDraft>({
+    title: "",
+    subtitle: "",
+    body: "",
+    contactLabel: "",
+    contactUrl: "",
+  });
+  const [draft, setDraft] = useState<AboutDraft>(savedRef.current);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  const isDirty = useMemo(() => !draftsEqual(draft, savedRef.current), [draft]);
+  useWarnUnsaved(isDirty);
 
   useEffect(() => {
-    let mounted = true;
-    setRefreshing(true);
-    void (async () => {
-      try {
-        const result = await API.getSystemVersion();
-        if (mounted) setData(result);
-      } catch (err) {
-        if (mounted) setError(err instanceof Error ? err.message : t("about_load_failed"));
-      } finally {
-        if (mounted) {
-          setLoading(false);
-          setRefreshing(false);
-        }
-      }
-    })();
+    let disposed = false;
+    setLoading(true);
+    Promise.all([API.getSystemConfig(), API.verifyAuth()])
+      .then(([res, auth]) => {
+        if (disposed) return;
+        const next = buildDraft(res);
+        savedRef.current = next;
+        setDraft(next);
+        setIsAdmin(auth.role === "admin");
+        setError(null);
+      })
+      .catch((err) => {
+        if (!disposed) setError(errMsg(err));
+      })
+      .finally(() => {
+        if (!disposed) setLoading(false);
+      });
     return () => {
-      mounted = false;
+      disposed = true;
     };
-    // 仅 mount 时拉一次；t 仅用于 fallback 错误文案，不应触发重新拉取 GitHub Release
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function handleRefresh() {
+  const updateDraft = <K extends keyof AboutDraft>(key: K, value: AboutDraft[K]) => {
+    setDraft((current) => ({ ...current, [key]: value }));
     setError(null);
-    setRefreshing(true);
+  };
+
+  const handleReset = () => {
+    setDraft(savedRef.current);
+    setError(null);
+  };
+
+  const handleSave = async () => {
+    const patch = buildPatch(draft, savedRef.current);
+    if (Object.keys(patch).length === 0) return;
+    setSaving(true);
+    setError(null);
     try {
-      const result = await API.getSystemVersion();
-      setData(result);
+      const res = await API.updateSystemConfig(patch);
+      const next = buildDraft(res);
+      savedRef.current = next;
+      setDraft(next);
+      useAppStore.getState().pushToast(t("about_admin_saved"), "success");
     } catch (err) {
-      setError(err instanceof Error ? err.message : t("about_load_failed"));
+      setError(errMsg(err));
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      setSaving(false);
     }
-  }
+  };
 
   if (loading) {
-    return <div className="rounded-2xl border border-gray-800 bg-gray-900/40 p-6 text-sm text-gray-400">{t("about_loading")}</div>;
+    return (
+      <div className="flex items-center gap-2 rounded-xl border border-gray-800 bg-gray-900/40 p-6 text-sm text-gray-400">
+        <Loader2 className="h-4 w-4 animate-spin text-indigo-300" />
+        {t("about_admin_loading")}
+      </div>
+    );
   }
 
   return (
     <section className="space-y-6">
-      <div className="rounded-2xl border border-gray-800 bg-gray-900/60 p-6 shadow-[0_20px_80px_rgba(15,23,42,0.35)]">
-        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-          <div className="space-y-3">
-            <p className="text-xs uppercase tracking-[0.24em] text-gray-500">{t("about_current_version")}</p>
-            <div className="flex items-end gap-3">
-              <span className="text-3xl font-semibold text-white">{data?.current.version ?? "-"}</span>
-              {data?.has_update ? (
-                <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs text-emerald-300">
-                  {t("about_update_available")}
-                </span>
-              ) : (
-                <span className="rounded-full border border-gray-700 bg-gray-800/70 px-2.5 py-1 text-xs text-gray-300">
-                  {t("about_up_to_date")}
-                </span>
-              )}
-            </div>
-            <div className="space-y-1 text-sm text-gray-300">
-              {data?.latest && <p>{t("about_latest_version", { version: data.latest.version })}</p>}
-              {data?.latest?.published_at && (
-                <p>{t("about_published_at", { date: formatDate(data.latest.published_at, i18n.language) })}</p>
-              )}
-              <p>{t("about_checked_at", { date: formatDate(data?.checked_at ?? "", i18n.language) })}</p>
-            </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={() => void handleRefresh()}
-            className="inline-flex items-center justify-center gap-2 rounded-xl border border-gray-700 bg-gray-950/70 px-4 py-2.5 text-sm font-medium text-gray-100 transition hover:border-gray-600 hover:bg-gray-800 focus-ring"
-          >
-            <RefreshCcw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
-            {refreshing ? t("about_checking_update") : t("about_check_update")}
-          </button>
-        </div>
-
-        {(error || data?.update_check_error) && (
-          <div className="mt-4 rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
-            {error ?? data?.update_check_error}
-          </div>
-        )}
-
-        {data?.latest?.html_url && (
-          <a
-            href={data.latest.html_url}
-            target="_blank"
-            rel="noreferrer"
-            className="mt-4 inline-flex items-center gap-2 text-sm text-sky-300 transition hover:text-sky-200"
-          >
-            {t("about_open_release")}
-            <ExternalLink className="h-3.5 w-3.5" />
-          </a>
-        )}
+      <div>
+        <h2 className="text-xl font-semibold text-gray-100">
+          {isAdmin ? t("about_admin_title") : t("about_public_title")}
+        </h2>
+        <p className="mt-1 text-sm text-gray-500">
+          {isAdmin ? t("about_admin_desc") : t("about_public_desc")}
+        </p>
       </div>
 
-      <div className="rounded-2xl border border-gray-800 bg-gray-900/40 p-6">
-        <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-gray-100">
-          <Info className="h-4 w-4 text-sky-300" />
-          <span>{t("about_release_notes")}</span>
-        </div>
-        {data?.latest?.body ? (
-          <div className="markdown-body text-sm leading-6 text-gray-200">
-            <StreamMarkdown content={data.latest.body} />
+      {isAdmin && (
+        <div className="rounded-xl border border-gray-800 bg-gray-900 p-5">
+          <div className="mb-4 flex items-center gap-2 text-sm font-medium text-gray-200">
+            <Info className="h-4 w-4 text-indigo-200" />
+            {t("about_admin_editor")}
           </div>
-        ) : (
-          <p className="text-sm text-gray-500">{t("about_release_notes_empty")}</p>
-        )}
+          <div className="grid gap-4">
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-gray-500">{t("about_admin_field_title")}</span>
+              <input
+                value={draft.title}
+                onChange={(event) => updateDraft("title", event.target.value)}
+                placeholder={t("about_admin_field_title_placeholder")}
+                className={inputClassName}
+                disabled={saving}
+              />
+            </label>
+
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-gray-500">{t("about_admin_field_subtitle")}</span>
+              <input
+                value={draft.subtitle}
+                onChange={(event) => updateDraft("subtitle", event.target.value)}
+                placeholder={t("about_admin_field_subtitle_placeholder")}
+                className={inputClassName}
+                disabled={saving}
+              />
+            </label>
+
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-gray-500">{t("about_admin_field_body")}</span>
+              <textarea
+                value={draft.body}
+                onChange={(event) => updateDraft("body", event.target.value)}
+                placeholder={t("about_admin_field_body_placeholder")}
+                className={`${inputClassName} min-h-40 resize-y leading-6`}
+                disabled={saving}
+              />
+            </label>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium text-gray-500">{t("about_admin_field_contact_label")}</span>
+                <input
+                  value={draft.contactLabel}
+                  onChange={(event) => updateDraft("contactLabel", event.target.value)}
+                  placeholder={t("about_admin_field_contact_label_placeholder")}
+                  className={inputClassName}
+                  disabled={saving}
+                />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium text-gray-500">{t("about_admin_field_contact_url")}</span>
+                <input
+                  value={draft.contactUrl}
+                  onChange={(event) => updateDraft("contactUrl", event.target.value)}
+                  placeholder="https://example.com/contact"
+                  className={inputClassName}
+                  disabled={saving}
+                />
+              </label>
+            </div>
+          </div>
+
+          {error && (
+            <div className="mt-4 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">
+              {error}
+            </div>
+          )}
+
+          <div className="mt-5 flex flex-wrap justify-end gap-2">
+            <button
+              type="button"
+              onClick={handleReset}
+              disabled={!isDirty || saving}
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-gray-700 px-4 text-sm text-gray-300 transition-colors hover:bg-gray-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <RotateCcw className="h-4 w-4" />
+              {t("about_admin_reset")}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleSave()}
+              disabled={!isDirty || saving}
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-indigo-400/30 bg-indigo-500/10 px-4 text-sm font-medium text-indigo-100 transition-colors hover:bg-indigo-500/15 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+              {t("about_admin_save")}
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-5">
+        <p className="mb-4 text-sm font-medium text-gray-200">
+          {isAdmin ? t("about_admin_preview") : t("about_public_content")}
+        </p>
+        <AboutPreview draft={draft} emptyText={t(isAdmin ? "about_admin_empty_preview" : "about_public_empty")} />
       </div>
     </section>
   );

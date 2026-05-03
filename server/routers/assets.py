@@ -19,6 +19,7 @@ from lib.db.repositories.asset_repo import AssetRepository
 from lib.i18n import Translator
 from lib.project_manager import ProjectManager
 from server.auth import CurrentUser
+from server.services.project_access import load_project_for_user, project_manager_for_user
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,10 @@ pm = ProjectManager(PROJECT_ROOT / "projects")
 
 def get_project_manager() -> ProjectManager:
     return pm
+
+
+def get_project_manager_for_user(user_id: str | None) -> ProjectManager:
+    return project_manager_for_user(get_project_manager(), user_id)
 
 
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
@@ -44,6 +49,89 @@ def _validate_asset_name(name: str, _t: Translator) -> str:
     if not cleaned or ".." in cleaned or any(c in cleaned for c in _ILLEGAL_NAME_CHARS):
         raise HTTPException(status_code=400, detail=_t("asset_invalid_name", name=name))
     return cleaned
+
+
+def _default_asset_name_from_path(file_path: str) -> str:
+    stem = Path(file_path.replace("\\", "/")).stem.strip()
+    if not stem or ".." in stem or any(c in stem for c in _ILLEGAL_NAME_CHARS):
+        return "travel-reference"
+    return stem
+
+
+_PROJECT_FILE_DESCRIPTION_PREFIXES = (
+    "Project file:",
+    "Travel route reference image:",
+    "旅游路线参考图：",
+    "旅行ルート参考画像:",
+)
+
+
+def _extract_asset_source_file(description: str | None) -> str | None:
+    text = (description or "").strip()
+    if not text:
+        return None
+
+    for prefix in _PROJECT_FILE_DESCRIPTION_PREFIXES:
+        if text.startswith(prefix):
+            value = text[len(prefix):].strip()
+            return value or None
+
+    marker = "travel_references/"
+    index = text.find(marker)
+    if index >= 0:
+        return text[index:].strip() or None
+    return None
+
+
+def _infer_project_asset_source_kind(asset) -> str:
+    source_file = _extract_asset_source_file(asset.description)
+    if source_file and source_file.startswith("travel_references/"):
+        return "travel_reference"
+    if asset.source_project:
+        return "project_asset"
+    return "asset_library"
+
+
+def _project_asset_source_payload(asset) -> dict:
+    payload = {
+        "kind": "asset_library",
+        "asset_id": asset.id,
+        "asset_type": asset.type,
+        "source_kind": _infer_project_asset_source_kind(asset),
+    }
+    if asset.source_project:
+        payload["source_project"] = asset.source_project
+    source_file = _extract_asset_source_file(asset.description)
+    if source_file:
+        payload["source_file"] = source_file
+    return payload
+
+
+async def _resolve_asset_conflict(
+    repo: AssetRepository,
+    asset_type: str,
+    asset_name: str,
+    conflict_policy: str,
+    _t: Translator,
+):
+    existing = await repo.get_by_type_name(asset_type, asset_name)
+    if existing is None or conflict_policy == "overwrite":
+        return asset_name, existing
+    if conflict_policy == "skip":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": _t("asset_already_exists", name=asset_name),
+                "existing": _serialize(existing),
+            },
+        )
+
+    for index in range(2, 1000):
+        candidate = f"{asset_name} {index}"
+        if not await repo.exists(asset_type, candidate):
+            return candidate, None
+
+    raise HTTPException(status_code=409, detail=_t("asset_already_exists", name=asset_name))
 
 
 def _serialize(asset) -> dict:
@@ -77,7 +165,10 @@ async def _save_upload(file: UploadFile, asset_type: str, _t: Translator) -> str
 
 
 def _delete_global_asset_file(rel_path: str) -> None:
-    path = get_project_manager().projects_root / rel_path
+    path = _global_asset_file_path(rel_path)
+    if path is None:
+        logger.warning("skip unsafe global asset file path: %s", rel_path)
+        return
     try:
         path.unlink()
     except FileNotFoundError:
@@ -85,6 +176,27 @@ def _delete_global_asset_file(rel_path: str) -> None:
         return
     except OSError:
         logger.warning("delete global asset file failed: %s", rel_path)
+
+
+def _global_asset_file_path(rel_path: str | None, asset_type: str | None = None) -> Path | None:
+    """Resolve a DB-stored global asset path inside _global_assets."""
+    if not rel_path:
+        return None
+    normalized = str(rel_path).replace("\\", "/").strip()
+    if normalized.startswith("/") or not normalized.startswith("_global_assets/"):
+        return None
+
+    manager = get_project_manager()
+    root = manager.get_global_assets_root()
+    if asset_type:
+        root = root / asset_type
+    root_resolved = root.resolve(strict=False)
+    candidate = (manager.projects_root / normalized).resolve(strict=False)
+    try:
+        candidate.relative_to(root_resolved)
+    except ValueError:
+        return None
+    return candidate
 
 
 @router.get("")
@@ -264,13 +376,16 @@ async def from_project(
         raise HTTPException(status_code=400, detail=_t("asset_invalid_type"))
 
     # 2) 加载项目
+    project_manager = get_project_manager_for_user(_user.id)
     try:
-        project = get_project_manager().load_project(req.project_name)
+        project = load_project_for_user(get_project_manager(), req.project_name, user_id=_user.id, translate=_t)
     except FileNotFoundError:
         raise HTTPException(
             status_code=404,
             detail=_t("asset_target_project_not_found", project=req.project_name),
         )
+    except HTTPException:
+        raise
     except Exception:
         logger.exception("Failed to load project '%s' for from-project", req.project_name)
         raise HTTPException(status_code=500, detail=_t("asset_load_project_failed"))
@@ -298,7 +413,7 @@ async def from_project(
     source_sheet_path: Path | None = None
     if sheet_rel:
         try:
-            project_dir = get_project_manager().get_project_path(req.project_name)
+            project_dir = project_manager.get_project_path(req.project_name)
             ProjectManager._safe_subpath(project_dir, sheet_rel)
             candidate = project_dir / sheet_rel
             if candidate.exists() and candidate.is_file():
@@ -381,6 +496,128 @@ async def from_project(
     return {"asset": _serialize(a)}
 
 
+class FromProjectFileRequest(BaseModel):
+    project_name: str
+    file_path: str
+    asset_type: str = "scene"
+    name: str | None = None
+    description: str | None = None
+    voice_style: str = ""
+    conflict_policy: str = "rename"  # 'skip' | 'overwrite' | 'rename'
+
+
+@router.post("/from-project-file")
+async def from_project_file(
+    req: FromProjectFileRequest,
+    _user: CurrentUser,
+    _t: Translator,
+):
+    if req.asset_type not in ASSET_TYPES:
+        raise HTTPException(status_code=400, detail=_t("asset_invalid_type"))
+    if req.conflict_policy not in {"skip", "overwrite", "rename"}:
+        raise HTTPException(status_code=400, detail=_t("asset_invalid_conflict_policy"))
+
+    project_manager = get_project_manager_for_user(_user.id)
+    try:
+        load_project_for_user(get_project_manager(), req.project_name, user_id=_user.id, translate=_t)
+        project_dir = project_manager.get_project_path(req.project_name)
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=404,
+            detail=_t("asset_target_project_not_found", project=req.project_name),
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to load project '%s' for from-project-file", req.project_name)
+        raise HTTPException(status_code=500, detail=_t("asset_load_project_failed"))
+
+    source_rel = (req.file_path or "").strip().replace("\\", "/")
+    if not source_rel or "://" in source_rel:
+        raise HTTPException(status_code=400, detail=_t("asset_invalid_project_file", path=req.file_path))
+
+    try:
+        source_path = Path(ProjectManager._safe_subpath(project_dir, source_rel))
+    except ValueError:
+        raise HTTPException(status_code=400, detail=_t("asset_invalid_project_file", path=req.file_path))
+
+    if not source_path.exists() or not source_path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail=_t("asset_project_file_not_found", project=req.project_name, path=source_rel),
+        )
+    ext = source_path.suffix.lower()
+    if ext not in ALLOWED_EXTS:
+        raise HTTPException(status_code=415, detail=_t("asset_unsupported_format"))
+    if source_path.stat().st_size > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=_t("asset_upload_too_large"))
+
+    requested_name = _validate_asset_name(req.name or _default_asset_name_from_path(source_rel), _t)
+    description = req.description if req.description is not None else f"Project file: {source_rel}"
+    voice_style = req.voice_style if req.asset_type == "character" else ""
+
+    async with async_session_factory() as s:
+        repo = AssetRepository(s)
+        asset_name, existing = await _resolve_asset_conflict(
+            repo,
+            req.asset_type,
+            requested_name,
+            req.conflict_policy,
+            _t,
+        )
+
+    new_image_path: str | None = None
+    root = get_project_manager().get_global_assets_root() / req.asset_type
+    uid = uuid.uuid4().hex
+    target = root / f"{uid}{ext}"
+    await asyncio.to_thread(shutil.copyfile, source_path, target)
+    new_image_path = f"_global_assets/{req.asset_type}/{uid}{ext}"
+
+    try:
+        async with async_session_factory() as s:
+            repo = AssetRepository(s)
+            if existing is not None:
+                old_image = (
+                    existing.image_path if existing.image_path and existing.image_path != new_image_path else None
+                )
+                a = await repo.update(
+                    existing.id,
+                    description=description,
+                    voice_style=voice_style,
+                    image_path=new_image_path,
+                    source_project=req.project_name,
+                )
+                await s.commit()
+                await s.refresh(a)
+                if old_image:
+                    _delete_global_asset_file(old_image)
+            else:
+                try:
+                    a = await repo.create(
+                        type=req.asset_type,
+                        name=asset_name,
+                        description=description,
+                        voice_style=voice_style,
+                        image_path=new_image_path,
+                        source_project=req.project_name,
+                    )
+                    await s.commit()
+                    await s.refresh(a)
+                except IntegrityError:
+                    await s.rollback()
+                    if new_image_path:
+                        _delete_global_asset_file(new_image_path)
+                    raise HTTPException(status_code=409, detail=_t("asset_already_exists", name=asset_name))
+    except HTTPException:
+        raise
+    except Exception:
+        if new_image_path:
+            _delete_global_asset_file(new_image_path)
+        raise
+
+    return {"asset": _serialize(a)}
+
+
 class ApplyToProjectRequest(BaseModel):
     asset_ids: list[str]
     target_project: str
@@ -398,9 +635,9 @@ async def apply_to_project(
         raise HTTPException(status_code=400, detail=_t("asset_invalid_conflict_policy"))
 
     # 2) 校验目标项目存在
-    project_manager = get_project_manager()
+    project_manager = get_project_manager_for_user(_user.id)
     try:
-        project = project_manager.load_project(req.target_project)
+        project = load_project_for_user(get_project_manager(), req.target_project, user_id=_user.id, translate=_t)
     except FileNotFoundError:
         raise HTTPException(
             status_code=404,
@@ -456,8 +693,8 @@ async def apply_to_project(
         copy_src: Path | None = None
         copy_dst: Path | None = None
         if a.image_path:
-            src = project_manager.projects_root / a.image_path
-            if src.exists() and src.is_file():
+            src = _global_asset_file_path(a.image_path, a.type)
+            if src is not None and src.exists() and src.is_file():
                 ext = src.suffix.lower() or ".png"
                 rel_sheet = f"{bucket_key}/{desired_name}{ext}"
                 try:
@@ -512,6 +749,7 @@ async def apply_to_project(
             name_ = plan["desired_name"]
             ts = plan["target_sheet"]
             payload: dict = {"description": a_.description or ""}
+            payload["asset_source"] = _project_asset_source_payload(a_)
             if a_.type == "character":
                 payload["voice_style"] = a_.voice_style or ""
             if ts:

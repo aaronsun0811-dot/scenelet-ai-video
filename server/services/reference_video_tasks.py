@@ -19,13 +19,23 @@ from lib.config.resolver import ConfigResolver
 from lib.db import async_session_factory
 from lib.db.base import DEFAULT_USER_ID
 from lib.image_utils import compress_image_bytes
+from lib.model_rules import append_model_rule_for_model
 from lib.reference_video import render_prompt_for_backend
 from lib.reference_video.errors import MissingReferenceError, RequestPayloadTooLargeError
 from lib.script_models import ReferenceResource
 from lib.thumbnail import extract_video_thumbnail
-from server.services.generation_tasks import get_media_generator, get_project_manager
+from server.services.generation_tasks import (
+    get_media_generator,
+    get_project_manager,
+    resolve_credential_user_id,
+)
+from server.services.project_access import project_manager_for_user
 
 logger = logging.getLogger(__name__)
+
+
+def get_project_manager_for_user(user_id: str | None):
+    return project_manager_for_user(get_project_manager(), user_id)
 
 
 def _resolve_unit_references(
@@ -61,6 +71,58 @@ def _resolve_unit_references(
     if missing:
         raise MissingReferenceError(missing=missing)
     return resolved
+
+
+def _safe_project_file(project_path: Path, relative_path: str) -> Path | None:
+    raw = str(relative_path or "").strip()
+    if not raw:
+        return None
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = project_path / candidate
+    project_root = project_path.resolve(strict=False)
+    resolved = candidate.resolve(strict=False)
+    try:
+        resolved.relative_to(project_root)
+    except ValueError:
+        return None
+    return resolved if resolved.exists() and resolved.is_file() else None
+
+
+def _resolve_travel_reference_images(project: dict, project_path: Path) -> list[Path]:
+    """Resolve project-level travel-video reference images.
+
+    These images are optional route/persona/street-view anchors uploaded for the
+    whole travel video. Unit-level references stay first so character/scene sheets
+    keep priority when a provider has a low reference-image limit.
+    """
+    if project.get("content_type") != "travel_video":
+        return []
+    settings = project.get("travel_video_settings")
+    if not isinstance(settings, dict):
+        return []
+
+    raw_refs: list[object] = []
+    configured_refs = settings.get("reference_images")
+    if isinstance(configured_refs, list):
+        raw_refs.extend(configured_refs)
+    preview = settings.get("route_preview")
+    if isinstance(preview, dict) and isinstance(preview.get("reference_images"), list):
+        raw_refs.extend(preview["reference_images"])
+
+    seen: set[Path] = set()
+    resolved_refs: list[Path] = []
+    for item in raw_refs:
+        if not isinstance(item, str):
+            continue
+        path = _safe_project_file(project_path, item)
+        if path is None or path in seen:
+            continue
+        seen.add(path)
+        resolved_refs.append(path)
+        if len(resolved_refs) >= 10:
+            break
+    return resolved_refs
 
 
 def _compress_references_to_tempfiles(
@@ -104,6 +166,17 @@ def _render_unit_prompt(unit: dict) -> str:
     raw = "\n".join(str(s.get("text", "")) for s in shots)
     references = [ReferenceResource(type=r["type"], name=r["name"]) for r in (unit.get("references") or [])]
     return render_prompt_for_backend(raw, references)
+
+
+def _append_travel_reference_prompt_note(prompt: str, included_count: int) -> str:
+    if included_count <= 0:
+        return prompt
+    return (
+        f"{prompt}\n\n"
+        f"项目级旅游参考图：本次还随请求附带 {included_count} 张旅游路线参考图，"
+        "用于保持街景、地标、地图路线、导游人物或城市质感一致。"
+        "这些参考图是视觉和路线依据，不要把它们当成新的剧情角色。"
+    )
 
 
 def _apply_provider_constraints(
@@ -174,7 +247,7 @@ async def execute_reference_video_task(
 
     # 1. 加载上下文（阻塞 IO，线程池）
     def _load():
-        pm = get_project_manager()
+        pm = get_project_manager_for_user(user_id)
         project = pm.load_project(project_name)
         project_path = pm.get_project_path(project_name)
         script = pm.load_script(project_name, script_file)
@@ -187,7 +260,9 @@ async def execute_reference_video_task(
     project, project_path, unit = await asyncio.to_thread(_load)
 
     # 2. 解析 references（缺图直接失败）
-    source_refs = _resolve_unit_references(project, project_path, unit.get("references") or [])
+    unit_source_refs = _resolve_unit_references(project, project_path, unit.get("references") or [])
+    travel_source_refs = _resolve_travel_reference_images(project, project_path)
+    source_refs = [*unit_source_refs, *travel_source_refs]
 
     # 3. 构造 generator（拿到 video_backend 名字后才能做 provider 特判）
     generator = await get_media_generator(project_name, payload=payload, user_id=user_id)
@@ -208,7 +283,7 @@ async def execute_reference_video_task(
     max_refs: int | None = None
     max_duration: int | None = None
     try:
-        resolver = ConfigResolver(async_session_factory)
+        resolver = ConfigResolver(async_session_factory, user_id=resolve_credential_user_id(project, user_id))
         caps = await resolver.video_capabilities_for_project(project)
         caps_model = caps.get("model")
         if model_name and caps_model and caps_model != model_name:
@@ -254,6 +329,17 @@ async def execute_reference_video_task(
     if len(constrained_refs) < len(unit_refs):
         unit_for_prompt = {**unit, "references": unit_refs[: len(constrained_refs)]}
     rendered_prompt = _render_unit_prompt(unit_for_prompt)
+    included_unit_ref_count = min(len(unit_refs), len(constrained_refs))
+    included_travel_ref_count = max(0, len(constrained_refs) - included_unit_ref_count)
+    rendered_prompt = _append_travel_reference_prompt_note(rendered_prompt, included_travel_ref_count)
+    rendered_prompt = await append_model_rule_for_model(
+        rendered_prompt,
+        provider_id=registry_provider_id or provider_name,
+        model_id=model_name or "",
+        backend_name=provider_name,
+        media_type="video",
+        user_id=resolve_credential_user_id(project, user_id),
+    )
 
     # 7. 压缩到临时文件（2048px/q=85）→ 首次调用
     tmp_refs: list[Path] = await asyncio.to_thread(_compress_references_to_tempfiles, constrained_refs)
@@ -310,7 +396,7 @@ async def execute_reference_video_task(
 
     # 9. 更新 unit.generated_assets（简单读改写 episode script）
     def _update_unit_assets():
-        pm = get_project_manager()
+        pm = get_project_manager_for_user(user_id)
         script = pm.load_script(project_name, script_file)
         for u in script.get("video_units") or []:
             if u.get("unit_id") == resource_id:

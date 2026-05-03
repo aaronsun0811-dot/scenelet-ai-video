@@ -109,6 +109,29 @@ class TestScriptGenerator:
         assert "E1S01 | 片段" in prompt
         assert "姜月茴" in prompt
 
+    async def test_build_prompt_injects_content_type_workflow(self, tmp_path):
+        project_path = tmp_path / "demo"
+        _write_json(
+            project_path / "project.json",
+            {
+                "title": "项目",
+                "content_type": "short_drama",
+                "content_mode": "drama",
+                "overview": {"synopsis": "概述"},
+                "characters": {"姜月茴": {}},
+                "scenes": {},
+                "props": {},
+                "style": "现代",
+            },
+        )
+        _write(project_path / "drafts" / "episode_1" / "step1_normalized_script.md", "E1S01 | 场景")
+
+        prompt = ScriptGenerator(project_path).build_prompt(1)
+
+        assert "内容类型：短剧" in prompt
+        assert "明确钩子" in prompt
+        assert "E1S01 | 场景" in prompt
+
     async def test_load_step1_falls_back_when_primary_missing(self, tmp_path):
         project_path = tmp_path / "demo"
         _write_json(
@@ -169,6 +192,29 @@ class TestScriptGenerator:
         assert payload["duration_seconds"] == 4
         assert payload["metadata"]["generator"] == "fake-model"
         assert "created_at" in payload["metadata"]
+
+    async def test_generate_records_content_type_in_metadata(self, tmp_path):
+        project_path = tmp_path / "demo"
+        _write_json(
+            project_path / "project.json",
+            {
+                "title": "项目",
+                "content_type": "narration_story",
+                "content_mode": "narration",
+                "overview": {},
+                "characters": {"姜月茴": {}},
+                "clues": {"玉佩": {}},
+                "style": "古风",
+            },
+        )
+        _write(project_path / "drafts" / "episode_1" / "step1_segments.md", "E1S01 | 片段")
+
+        fake = _FakeTextGenerator(json.dumps(_valid_narration_response(), ensure_ascii=False))
+        output = await ScriptGenerator(project_path, generator=fake).generate(1)
+
+        payload = json.loads(output.read_text(encoding="utf-8"))
+        assert payload["metadata"]["content_type"] == "narration_story"
+        assert "内容类型：口播故事" in fake.backend.last_request.prompt
 
     async def test_generate_overrides_hallucinated_episode_field(self, tmp_path):
         """AI 返回带错误 episode 字段时，CLI 参数 episode 必须胜出。

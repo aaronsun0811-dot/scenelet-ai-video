@@ -3,14 +3,31 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
-import instructor
-from instructor import Mode
 from pydantic import BaseModel
 
 from lib.text_backends.base import TextGenerationResult
 
 logger = logging.getLogger(__name__)
+
+instructor: Any | None = None
+
+
+def _get_instructor():
+    """Load instructor lazily because it imports optional provider SDKs."""
+    global instructor
+    if instructor is not None:
+        return instructor
+    try:
+        import instructor as instructor_module
+    except Exception as exc:  # pragma: no cover - exact failure depends on installed provider SDKs
+        raise RuntimeError(
+            "Instructor 结构化输出降级依赖加载失败。请检查 instructor/google-genai 等可选依赖版本，"
+            "或改用支持原生 structured output 的模型。"
+        ) from exc
+    instructor = instructor_module
+    return instructor_module
 
 
 def generate_structured_via_instructor(
@@ -18,7 +35,7 @@ def generate_structured_via_instructor(
     model: str,
     messages: list[dict],
     response_model: type[BaseModel],
-    mode: Mode = Mode.MD_JSON,
+    mode: Any | None = None,
     max_retries: int = 2,
     max_tokens: int | None = None,
 ) -> tuple[str, int | None, int | None]:
@@ -26,7 +43,9 @@ def generate_structured_via_instructor(
 
     返回 (json_text, input_tokens, output_tokens)。
     """
-    patched = instructor.from_openai(client, mode=mode)
+    instructor_module = _get_instructor()
+    mode = mode if mode is not None else instructor_module.Mode.MD_JSON
+    patched = instructor_module.from_openai(client, mode=mode)
     if patched is None:
         raise TypeError(
             f"instructor.from_openai() 返回 None — client 类型 {type(client).__name__} 不受支持，"
@@ -56,7 +75,7 @@ async def generate_structured_via_instructor_async(
     model: str,
     messages: list[dict],
     response_model: type[BaseModel],
-    mode: Mode = Mode.MD_JSON,
+    mode: Any | None = None,
     max_retries: int = 2,
     max_tokens: int | None = None,
 ) -> tuple[str, int | None, int | None]:
@@ -64,7 +83,9 @@ async def generate_structured_via_instructor_async(
 
     返回 (json_text, input_tokens, output_tokens)。
     """
-    patched = instructor.from_openai(client, mode=mode)
+    instructor_module = _get_instructor()
+    mode = mode if mode is not None else instructor_module.Mode.MD_JSON
+    patched = instructor_module.from_openai(client, mode=mode)
     if patched is None:
         raise TypeError(
             f"instructor.from_openai() 返回 None — client 类型 {type(client).__name__} 不受支持，"

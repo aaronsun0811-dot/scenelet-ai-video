@@ -24,6 +24,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
                 "title": "T",
                 "content_mode": "reference_video",
                 "generation_mode": "reference_video",
+                "owner_user_id": "u1",
                 "style": "s",
                 "characters": {"张三": {"description": "x"}},
                 "scenes": {"酒馆": {"description": "x"}},
@@ -203,9 +204,26 @@ def test_generate_unit_enqueues_task(client: TestClient, monkeypatch: pytest.Mon
             enqueued.append(kwargs)
             return {"task_id": "task-xyz", "deduped": False}
 
+    from server.routers import generate as generate_router
     from server.routers import reference_videos as router_mod
 
+    async def summarize(project, payload, *, task_type, media_type, user_id):
+        assert project["generation_mode"] == "reference_video"
+        assert task_type == "reference_video"
+        assert media_type == "video"
+        assert user_id == "u1"
+        return {
+            **payload,
+            "model_rule_summary": {
+                "media_type": media_type,
+                "mode_label": "GitHub Skill",
+                "target_label": "豆包 / 火山方舟 · doubao-seedance-2-0",
+                "task_type": task_type,
+            },
+        }
+
     monkeypatch.setattr(router_mod, "get_generation_queue", lambda: _FakeQueue())
+    monkeypatch.setattr(generate_router, "_payload_with_model_rule_summary", summarize)
 
     resp = client.post(f"/api/v1/projects/demo/reference-videos/episodes/1/units/{uid}/generate")
     assert resp.status_code == 202, resp.text
@@ -213,6 +231,8 @@ def test_generate_unit_enqueues_task(client: TestClient, monkeypatch: pytest.Mon
     assert enqueued[0]["task_type"] == "reference_video"
     assert enqueued[0]["media_type"] == "video"
     assert enqueued[0]["resource_id"] == uid
+    assert enqueued[0]["payload"]["model_rule_summary"]["task_type"] == "reference_video"
+    assert enqueued[0]["payload"]["model_rule_summary"]["media_type"] == "video"
 
 
 def test_generate_unit_missing_returns_404(client: TestClient):

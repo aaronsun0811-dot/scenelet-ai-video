@@ -26,6 +26,8 @@ def client():
             "AUTH_USERNAME": "testuser",
             "AUTH_PASSWORD": "testpass",
             "AUTH_TOKEN_SECRET": "test-router-secret-key-at-least-32-bytes-long",
+            "AUTH_DB_USERS": "0",
+            "AUTH_ALLOW_REGISTRATION": "0",
         },
     ):
         app = FastAPI()
@@ -81,6 +83,8 @@ class TestVerifyRoute:
         data = resp.json()
         assert data["valid"] is True
         assert data["username"] == "testuser"
+        assert data["user_id"] == "default"
+        assert data["role"] == "admin"
 
     def test_verify_no_token(self, client):
         """缺少 token 返回 401"""

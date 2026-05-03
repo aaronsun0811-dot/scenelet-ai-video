@@ -1,5 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { API } from "@/api";
 import { SceneCard } from "./SceneCard";
 
 vi.mock("@/components/canvas/timeline/VersionTimeMachine", () => ({
@@ -8,6 +10,10 @@ vi.mock("@/components/canvas/timeline/VersionTimeMachine", () => ({
 
 describe("SceneCard", () => {
   const scene = { description: "阴森古朴" };
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
 
   it("renders name and description", () => {
     render(
@@ -23,8 +29,42 @@ describe("SceneCard", () => {
     expect(screen.getByDisplayValue("阴森古朴")).toBeInTheDocument();
   });
 
-  it("invokes onGenerate when generate button clicked", () => {
+  it("shows a travel reference source badge", () => {
+    render(
+      <SceneCard
+        name="大阪街景"
+        scene={{
+          description: "难波街区",
+          asset_source: {
+            kind: "asset_library",
+            source_kind: "travel_reference",
+            source_file: "travel_references/osaka-map.png",
+          },
+        }}
+        projectName="demo"
+        onUpdate={vi.fn()}
+        onGenerate={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("旅游参考图")).toBeInTheDocument();
+  });
+
+  it("invokes onGenerate after generation preflight confirmation", async () => {
+    const user = userEvent.setup();
     const onGenerate = vi.fn();
+    vi.spyOn(API, "requestGenerationPreflight").mockResolvedValue({
+      project_name: "demo",
+      task_type: "scene",
+      resource_id: "A",
+      billing_mode: "byok",
+      required_credits: 0,
+      count: 1,
+      minimum_generation_balance: 1,
+      can_submit: true,
+      blocking: [],
+      warnings: [{ code: "byok_uses_user_api", message: "本次生成将使用用户自己的 API Key，不扣平台积分。" }],
+    });
     render(
       <SceneCard
         name="A"
@@ -34,7 +74,9 @@ describe("SceneCard", () => {
         onGenerate={onGenerate}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /生成/ }));
+    await user.click(screen.getByRole("button", { name: /生成/ }));
+    await user.click(await screen.findByRole("button", { name: "确认提交" }));
+
     expect(onGenerate).toHaveBeenCalledWith("A");
   });
 

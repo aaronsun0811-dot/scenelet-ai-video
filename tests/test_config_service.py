@@ -1,7 +1,10 @@
+import os
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from lib.config.service import ConfigService
+from lib.config.registry import PROVIDER_REGISTRY
+from lib.config.service import ConfigService, sync_anthropic_env
 from lib.db.base import Base
 from lib.db.repositories.credential_repository import CredentialRepository
 
@@ -24,7 +27,7 @@ def config_service(session: AsyncSession) -> ConfigService:
 
 async def test_get_all_providers_status_empty(config_service: ConfigService):
     statuses = await config_service.get_all_providers_status()
-    assert len(statuses) == 5
+    assert len(statuses) == len(PROVIDER_REGISTRY)
     for s in statuses:
         assert s.status == "unconfigured"
 
@@ -74,3 +77,14 @@ async def test_get_default_backend_fallback(config_service: ConfigService):
 async def test_unknown_provider_raises(config_service: ConfigService):
     with pytest.raises(ValueError, match="Unknown provider"):
         await config_service.set_provider_config("unknown-provider", "key", "val")
+
+
+def test_sync_anthropic_env_sets_scenelet_and_legacy_agent_backend(monkeypatch):
+    monkeypatch.delenv("SCENELET_AGENT_MODEL_BACKEND", raising=False)
+    monkeypatch.delenv("ARCREEL_AGENT_MODEL_BACKEND", raising=False)
+
+    sync_anthropic_env({"agent_model_backend": "anthropic/claude-sonnet-4-5"})
+
+    assert os.environ["SCENELET_AGENT_MODEL_BACKEND"] == "anthropic/claude-sonnet-4-5"
+    assert os.environ["ARCREEL_AGENT_MODEL_BACKEND"] == "anthropic/claude-sonnet-4-5"
+    assert os.environ["ANTHROPIC_MODEL"] == "claude-sonnet-4-5"

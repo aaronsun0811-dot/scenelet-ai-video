@@ -34,6 +34,18 @@ class SourceLoader:
     SUPPORTED_EXTS = frozenset(_EXTRACTORS.keys())
     DEFAULT_MAX_BYTES = 50 * 1024 * 1024
 
+    @staticmethod
+    def _safe_original_filename(filename: str) -> str:
+        """Return a basename-only upload filename.
+
+        Multipart filenames are user controlled. Normalize both POSIX and
+        Windows separators before any conflict detection or raw backup path use.
+        """
+        cleaned = Path(str(filename or "").replace("\\", "/")).name.strip()
+        if not cleaned or cleaned in {".", ".."}:
+            return "source.txt"
+        return cleaned
+
     @classmethod
     def detect_conflict(cls, original_filename: str, dst_dir: Path) -> tuple[bool, str]:
         """返回 (has_conflict, suggested_stem).
@@ -43,6 +55,7 @@ class SourceLoader:
         - dst_dir/raw/<original_filename> 存在
         suggested_stem 从 stem_1, stem_2, ... 递增到不冲突为止。
         """
+        original_filename = cls._safe_original_filename(original_filename)
         stem = Path(original_filename).stem
         normalized = dst_dir / f"{stem}.txt"
         raw = dst_dir / "raw" / original_filename
@@ -98,7 +111,7 @@ class SourceLoader:
 
         并发：非线程/进程安全。多进程 uvicorn worker 下调用方需保证 dst_dir 互斥。
         """
-        original_filename = original_filename or src.name
+        original_filename = cls._safe_original_filename(original_filename or src.name)
         ext = Path(original_filename).suffix.lower()
 
         if ext not in cls.SUPPORTED_EXTS:
@@ -166,6 +179,7 @@ class SourceLoader:
         # 需保留 raw 以支持前端"下载原始格式"按钮与 QA 回放。
         if ext in {".txt", ".md"} and extracted.used_encoding == "utf-8":
             return None
+        effective_filename = SourceLoader._safe_original_filename(effective_filename)
         raw_dir = dst_dir / "raw"
         raw_dir.mkdir(parents=True, exist_ok=True)
         raw_path = raw_dir / effective_filename

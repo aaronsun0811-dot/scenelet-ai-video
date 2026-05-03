@@ -14,18 +14,29 @@ from pydantic import BaseModel, Field
 
 from lib import PROJECT_ROOT
 from lib.i18n import Translator, get_locale
+from lib.project_manager import ProjectManager
 from server.agent_runtime.models import SessionMeta
 from server.agent_runtime.service import AssistantService
 from server.agent_runtime.session_manager import SessionCapacityError
 from server.auth import CurrentUser, CurrentUserFlexible
+from server.services.project_access import load_project_for_user
 
 router = APIRouter()
 
 assistant_service = AssistantService(project_root=PROJECT_ROOT)
+project_manager = ProjectManager(PROJECT_ROOT / "projects")
 
 
 def get_assistant_service() -> AssistantService:
     return assistant_service
+
+
+def get_project_manager() -> ProjectManager:
+    return project_manager
+
+
+def _ensure_project_access(project_name: str, user_id: str, _t: Callable[..., str]) -> None:
+    load_project_for_user(get_project_manager(), project_name, user_id=user_id, translate=_t)
 
 
 async def _validate_session_ownership(
@@ -74,14 +85,27 @@ async def send_message(
     _t: Translator,
 ):
     try:
+        _ensure_project_access(project_name, _user.id, _t)
         service = get_assistant_service()
-        result = await service.send_or_create(
-            project_name,
-            req.content,
-            session_id=req.session_id,
-            images=req.images,
-            locale=get_locale(request),
-        )
+        try:
+            result = await service.send_or_create(
+                project_name,
+                req.content,
+                session_id=req.session_id,
+                images=req.images,
+                locale=get_locale(request),
+                user_id=_user.id,
+            )
+        except TypeError as exc:
+            if "user_id" not in str(exc):
+                raise
+            result = await service.send_or_create(
+                project_name,
+                req.content,
+                session_id=req.session_id,
+                images=req.images,
+                locale=get_locale(request),
+            )
         return result
     except SessionCapacityError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
@@ -91,6 +115,8 @@ async def send_message(
         raise HTTPException(status_code=504, detail=_t("sdk_session_timeout"))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("请求处理失败")
         raise HTTPException(status_code=500, detail=str(exc))
@@ -100,11 +126,13 @@ async def send_message(
 async def list_sessions(
     project_name: str,
     _user: CurrentUser,
+    _t: Translator,
     status: Literal["idle", "running", "completed", "error", "interrupted"] | None = None,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ):
     try:
+        _ensure_project_access(project_name, _user.id, _t)
         sessions = await get_assistant_service().list_sessions(
             project_name=project_name, status=status, limit=limit, offset=offset
         )
@@ -119,6 +147,7 @@ async def list_sessions(
 @router.get("/sessions/{session_id}")
 async def get_session(project_name: str, session_id: str, _user: CurrentUser, _t: Translator):
     try:
+        _ensure_project_access(project_name, _user.id, _t)
         service = get_assistant_service()
         session = await _validate_session_ownership(service, session_id, project_name, _t)
         return session.model_dump()
@@ -132,6 +161,7 @@ async def get_session(project_name: str, session_id: str, _user: CurrentUser, _t
 @router.delete("/sessions/{session_id}")
 async def delete_session(project_name: str, session_id: str, _user: CurrentUser, _t: Translator):
     try:
+        _ensure_project_access(project_name, _user.id, _t)
         service = get_assistant_service()
         await _validate_session_ownership(service, session_id, project_name, _t)
         deleted = await service.delete_session(session_id)
@@ -156,6 +186,7 @@ async def list_messages(project_name: str, session_id: str, _user: CurrentUser, 
 @router.get("/sessions/{session_id}/snapshot")
 async def get_snapshot(project_name: str, session_id: str, _user: CurrentUser, _t: Translator):
     try:
+        _ensure_project_access(project_name, _user.id, _t)
         service = get_assistant_service()
         meta = await _validate_session_ownership(service, session_id, project_name, _t)
         snapshot = await service.get_snapshot(session_id, meta=meta)
@@ -172,6 +203,7 @@ async def get_snapshot(project_name: str, session_id: str, _user: CurrentUser, _
 @router.post("/sessions/{session_id}/interrupt")
 async def interrupt_session(project_name: str, session_id: str, _user: CurrentUser, _t: Translator):
     try:
+        _ensure_project_access(project_name, _user.id, _t)
         service = get_assistant_service()
         meta = await _validate_session_ownership(service, session_id, project_name, _t)
         result = await service.interrupt_session(session_id, meta=meta)
@@ -199,6 +231,7 @@ async def answer_question(
     if not req.answers:
         raise HTTPException(status_code=400, detail=_t("answers_required"))
     try:
+        _ensure_project_access(project_name, _user.id, _t)
         service = get_assistant_service()
         meta = await _validate_session_ownership(service, session_id, project_name, _t)
         result = await service.answer_user_question(
@@ -224,10 +257,12 @@ async def stream_events(
     project_name: str,
     session_id: str,
     _user: CurrentUserFlexible,
+    _t: Translator,
     deps: tuple[AssistantService, SessionMeta] = Depends(_assistant_service_for_stream),
 ) -> AsyncIterator[ServerSentEvent]:
     service, meta = deps
     try:
+        _ensure_project_access(project_name, _user.id, _t)
         async for event in service.stream_events(session_id, meta=meta):
             yield event
     except HTTPException:
@@ -240,7 +275,14 @@ async def stream_events(
 @router.get("/skills")
 async def list_skills(project_name: str, _user: CurrentUser, _t: Translator):
     try:
-        skills = get_assistant_service().list_available_skills(project_name=project_name)
+        _ensure_project_access(project_name, _user.id, _t)
+        service = get_assistant_service()
+        try:
+            skills = service.list_available_skills(project_name=project_name, user_id=_user.id)
+        except TypeError as exc:
+            if "user_id" not in str(exc):
+                raise
+            skills = service.list_available_skills(project_name=project_name)
         return {"skills": skills}
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=_t("project_not_found", name=project_name))

@@ -6,6 +6,7 @@ from sqlalchemy import DateTime, ForeignKey, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 DEFAULT_USER_ID = "default"
+PLATFORM_USER_ID = "platform"
 
 
 class Base(DeclarativeBase):

@@ -14,7 +14,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import Response
@@ -29,6 +29,8 @@ from lib.db.base import dt_to_iso
 from lib.db.repositories.credential_repository import CredentialRepository
 from lib.gemini_shared import VERTEX_SCOPES
 from lib.i18n import Translator
+from lib.provider_base_urls import resolve_provider_base_url
+from server.auth import CurrentUser
 from server.dependencies import get_config_service
 
 if TYPE_CHECKING:
@@ -139,6 +141,11 @@ class CreateCredentialRequest(BaseModel):
 
 class UpdateCredentialRequest(BaseModel):
     name: str | None = None
+    api_key: str | None = None
+    base_url: str | None = None
+
+
+class TestCredentialDraftRequest(BaseModel):
     api_key: str | None = None
     base_url: str | None = None
 
@@ -256,17 +263,18 @@ async def list_providers(
 async def get_provider_config(
     provider_id: str,
     _t: Translator,
+    _user: CurrentUser,
     session: AsyncSession = Depends(get_async_session),
 ) -> ProviderConfigResponse:
     """返回单个供应商的配置字段（registry 元数据与 DB 值合并）。"""
     _validate_provider(provider_id, _t)
 
     meta = PROVIDER_REGISTRY[provider_id]
-    svc = ConfigService(session)
+    svc = ConfigService(session, user_id=_user.id)
     db_values = await svc.get_provider_config_masked(provider_id)
 
     # 计算状态：基于凭证表是否有活跃凭证
-    cred_repo = CredentialRepository(session)
+    cred_repo = CredentialRepository(session, user_id=_user.id)
     has_active = await cred_repo.has_active_credential(provider_id)
     status = "ready" if has_active else "unconfigured"
 
@@ -295,12 +303,13 @@ async def patch_provider_config(
     body: dict[str, str | None],
     request: Request,
     _t: Translator,
+    _user: CurrentUser,
     session: AsyncSession = Depends(get_async_session),
 ) -> Response:
     """更新供应商配置。值为 null 表示删除该键。"""
     _validate_provider(provider_id, _t)
 
-    svc = ConfigService(session)
+    svc = ConfigService(session, user_id=_user.id)
     for key, value in body.items():
         if value is None:
             await svc.delete_provider_config(provider_id, key, flush=False)
@@ -324,10 +333,11 @@ async def patch_provider_config(
 async def list_credentials(
     provider_id: str,
     _t: Translator,
+    _user: CurrentUser,
     session: AsyncSession = Depends(get_async_session),
 ) -> CredentialListResponse:
     _validate_provider(provider_id, _t)
-    repo = CredentialRepository(session)
+    repo = CredentialRepository(session, user_id=_user.id)
     creds = await repo.list_by_provider(provider_id)
     return CredentialListResponse(credentials=[_cred_to_response(c) for c in creds])
 
@@ -338,10 +348,11 @@ async def create_credential(
     body: CreateCredentialRequest,
     request: Request,
     _t: Translator,
+    _user: CurrentUser,
     session: AsyncSession = Depends(get_async_session),
 ) -> CredentialResponse:
     _validate_provider(provider_id, _t)
-    repo = CredentialRepository(session)
+    repo = CredentialRepository(session, user_id=_user.id)
     cred = await repo.create(
         provider=provider_id,
         name=body.name,
@@ -360,10 +371,11 @@ async def update_credential(
     body: UpdateCredentialRequest,
     request: Request,
     _t: Translator,
+    _user: CurrentUser,
     session: AsyncSession = Depends(get_async_session),
 ) -> Response:
     _validate_provider(provider_id, _t)
-    repo = CredentialRepository(session)
+    repo = CredentialRepository(session, user_id=_user.id)
     cred = await _get_credential_or_404(repo, provider_id, cred_id, _t)
     kwargs: dict = {}
     if body.name is not None:
@@ -386,10 +398,11 @@ async def delete_credential(
     cred_id: int,
     request: Request,
     _t: Translator,
+    _user: CurrentUser,
     session: AsyncSession = Depends(get_async_session),
 ) -> Response:
     _validate_provider(provider_id, _t)
-    repo = CredentialRepository(session)
+    repo = CredentialRepository(session, user_id=_user.id)
     cred = await _get_credential_or_404(repo, provider_id, cred_id, _t)
     cred_path = cred.credentials_path  # 在 delete 前保存，避免 ORM 对象过期后无法访问
     await repo.delete(cred_id)
@@ -413,10 +426,11 @@ async def activate_credential(
     cred_id: int,
     request: Request,
     _t: Translator,
+    _user: CurrentUser,
     session: AsyncSession = Depends(get_async_session),
 ) -> Response:
     _validate_provider(provider_id, _t)
-    repo = CredentialRepository(session)
+    repo = CredentialRepository(session, user_id=_user.id)
     await _get_credential_or_404(repo, provider_id, cred_id, _t)
     await repo.activate(cred_id, provider_id)
     await session.commit()
@@ -428,6 +442,7 @@ async def activate_credential(
 async def upload_vertex_credential(
     request: Request,
     _t: Translator,
+    _user: CurrentUser,
     name: str = "Vertex Credentials",
     session: AsyncSession = Depends(get_async_session),
     file: UploadFile = File(...),
@@ -449,7 +464,7 @@ async def upload_vertex_credential(
     if not isinstance(payload, dict) or not payload.get("project_id"):
         raise HTTPException(status_code=400, detail=_t("vertex_json_missing_project_id"))
 
-    repo = CredentialRepository(session)
+    repo = CredentialRepository(session, user_id=_user.id)
     cred = await repo.create(provider="gemini-vertex", name=name)
 
     dest = PROJECT_ROOT / "vertex_keys" / f"vertex_cred_{cred.id}.json"
@@ -585,25 +600,71 @@ def _test_grok(config: dict[str, str], _t: Callable[..., str]) -> ConnectionTest
     )
 
 
-_OPENAI_MODEL_KEYWORDS = ("gpt", "sora", "dall", "o1", "o3", "o4")
+_OPENAI_COMPAT_MODEL_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "openai": ("gpt", "sora", "dall", "o1", "o3", "o4"),
+    "baidu": ("ernie", "x1"),
+    "qwen": ("qwen", "qwq"),
+    "zhipu": ("glm",),
+    "deepseek": ("deepseek",),
+    "moonshot": ("kimi", "moonshot"),
+    "minimax": ("minimax", "abab", "hailuo"),
+    "hunyuan": ("hunyuan",),
+    "anthropic": ("claude",),
+    "midjourney": ("midjourney", "mj"),
+    "luma": ("luma",),
+    "pika": ("pika",),
+    "runway": ("runway",),
+    "kling": ("kling", "klingai"),
+    "jimeng": ("jimeng", "seedance", "seedream"),
+}
 
 
 def _test_openai(config: dict[str, str], _t: Callable[..., str]) -> ConnectionTestResponse:
     """通过 models.list() 验证 OpenAI API Key。"""
     from openai import OpenAI
 
+    provider_id = config.get("_provider_id", "openai")
     kwargs: dict = {"api_key": config["api_key"]}
     base_url = config.get("base_url")
     if base_url:
         kwargs["base_url"] = base_url
     client = OpenAI(**kwargs)
     models = client.models.list()
-    available = sorted(m.id for m in models.data if any(k in m.id.lower() for k in _OPENAI_MODEL_KEYWORDS))
+    keywords = _OPENAI_COMPAT_MODEL_KEYWORDS.get(provider_id, ())
+    available = sorted(m.id for m in models.data if not keywords or any(k in m.id.lower() for k in keywords))
+    if not available and provider_id in PROVIDER_REGISTRY:
+        available = sorted(PROVIDER_REGISTRY[provider_id].models)
     return ConnectionTestResponse(
         success=True,
         available_models=available,
         message=_t("connection_success"),
     )
+
+
+def _format_connection_exception(exc: Exception, _t: Callable[..., str]) -> str:
+    """Turn SDK exceptions into user-facing diagnostics."""
+    status_code = getattr(exc, "status_code", None)
+    code = str(getattr(exc, "code", "") or "").lower()
+    err_msg = str(exc)
+    err_lower = err_msg.lower()
+
+    if (
+        status_code in (401, 403)
+        or code in {"authentication_error", "invalid_api_key", "unauthorized", "forbidden"}
+        or "authentication" in err_lower
+        or "invalid api key" in err_lower
+        or "unauthorized" in err_lower
+    ):
+        return _t("connection_auth_failed")
+    if status_code == 404 or "not found" in err_lower:
+        return _t("connection_endpoint_not_found")
+    if status_code == 429 or "rate limit" in err_lower:
+        return _t("connection_rate_limited")
+    if isinstance(status_code, int) and status_code >= 500:
+        return _t("connection_provider_unavailable")
+    if len(err_msg) > 200:
+        err_msg = err_msg[:200] + "..."
+    return _t("connection_failed", err_msg=err_msg)
 
 
 _TEST_DISPATCH: dict[str, Callable[[dict[str, str], Any], ConnectionTestResponse]] = {
@@ -612,6 +673,20 @@ _TEST_DISPATCH: dict[str, Callable[[dict[str, str], Any], ConnectionTestResponse
     "ark": _test_ark,
     "grok": _test_grok,
     "openai": _test_openai,
+    "baidu": _test_openai,
+    "qwen": _test_openai,
+    "zhipu": _test_openai,
+    "deepseek": _test_openai,
+    "moonshot": _test_openai,
+    "minimax": _test_openai,
+    "hunyuan": _test_openai,
+    "anthropic": _test_openai,
+    "midjourney": _test_openai,
+    "luma": _test_openai,
+    "pika": _test_openai,
+    "runway": _test_openai,
+    "kling": _test_openai,
+    "jimeng": _test_openai,
 }
 
 
@@ -619,28 +694,47 @@ _TEST_DISPATCH: dict[str, Callable[[dict[str, str], Any], ConnectionTestResponse
 async def test_provider_connection(
     provider_id: str,
     _t: Translator,
+    _user: CurrentUser,
+    body: Annotated[TestCredentialDraftRequest | None, Body()] = None,
     credential_id: int | None = None,
     session: AsyncSession = Depends(get_async_session),
 ) -> ConnectionTestResponse:
-    """调用供应商 API 验证连通性。可指定 credential_id 测试特定凭证。"""
+    """调用供应商 API 验证连通性。
+
+    可指定 credential_id 测试特定凭证；也可传入未保存的 api_key/base_url
+    做草稿测试，便于用户保存前确认 Key 可用。
+    """
     _validate_provider(provider_id, _t)
 
-    repo = CredentialRepository(session)
+    repo = CredentialRepository(session, user_id=_user.id)
+    draft_api_key = str(body.api_key or "").strip() if body else ""
+    draft_base_url = resolve_provider_base_url(provider_id, body.base_url) if body else None
+
+    cred = None
     if credential_id is not None:
         cred = await _get_credential_or_404(repo, provider_id, credential_id, _t)
-    else:
+    elif not draft_api_key:
         cred = await repo.get_active(provider_id)
 
-    if cred is None:
+    if cred is None and not draft_api_key:
         return ConnectionTestResponse(
             success=False,
             available_models=[],
             message=_t("missing_credentials"),
         )
 
-    svc = ConfigService(session)
+    svc = ConfigService(session, user_id=_user.id)
     config = await svc.get_provider_config(provider_id)
-    cred.overlay_config(config)
+    if cred is not None:
+        cred.overlay_config(config)
+    if draft_api_key:
+        config["api_key"] = draft_api_key
+    if draft_base_url:
+        config["base_url"] = draft_base_url
+    elif not config.get("base_url"):
+        if default_base_url := resolve_provider_base_url(provider_id, None):
+            config["base_url"] = default_base_url
+    config["_provider_id"] = provider_id
 
     test_fn = _TEST_DISPATCH.get(provider_id)
     if test_fn is None:
@@ -669,6 +763,6 @@ async def test_provider_connection(
         return ConnectionTestResponse(
             success=False,
             available_models=[],
-            message=_t("connection_failed", err_msg=err_msg),
+            message=_format_connection_exception(exc, _t),
         )
     return result

@@ -34,6 +34,7 @@ async def get_stats(
             provider=provider,
             start_date=start,
             end_date=end,
+            user_id=_user.id,
         )
     else:
         stats = await _tracker.get_stats(
@@ -41,6 +42,7 @@ async def get_stats(
             provider=provider,
             start_date=start,
             end_date=end,
+            user_id=_user.id,
         )
     return stats
 
@@ -67,11 +69,12 @@ async def get_calls(
         end_date=end,
         page=page,
         page_size=page_size,
+        user_id=_user.id,
     )
     return result
 
 
 @router.get("/usage/projects")
 async def get_projects_list(_user: CurrentUser):
-    projects = await _tracker.get_projects_list()
+    projects = await _tracker.get_projects_list(user_id=_user.id)
     return {"projects": projects}

@@ -105,6 +105,30 @@ def test_validator_allows_reference_videos_dir(tmp_path: Path):
     assert result.valid, result.errors
 
 
+def test_validator_allows_travel_references_dir(tmp_path: Path):
+    project = {
+        "title": "T",
+        "content_type": "travel_video",
+        "content_mode": "narration",
+        "style": "s",
+        "episodes": [],
+        "characters": {},
+        "scenes": {},
+        "props": {},
+        "travel_video_settings": {
+            "route_source": "reference_images",
+            "reference_images": ["travel_references/street.png"],
+        },
+    }
+    _write(tmp_path, "project.json", project)
+    (tmp_path / "travel_references").mkdir()
+    (tmp_path / "travel_references" / "street.png").write_bytes(b"\x00")
+
+    v = DataValidator()
+    result = v.validate_project_tree(tmp_path)
+    assert result.valid, result.errors
+
+
 def test_validator_rejects_non_string_reference_name(tmp_path: Path):
     project = {
         "title": "T",

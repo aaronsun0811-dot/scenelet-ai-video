@@ -36,6 +36,7 @@ from lib.db.base import dt_to_iso
 from lib.db.repositories.custom_provider_repo import CustomProviderRepository
 from lib.i18n import Translator
 from server.auth import CurrentUser
+from server.services.project_access import project_manager_for_user
 
 logger = logging.getLogger(__name__)
 
@@ -183,11 +184,11 @@ def _provider_to_response(provider, models) -> ProviderResponse:
     )
 
 
-def _cleanup_project_refs(prefix: str, setting_keys: tuple[str, ...]) -> None:
-    """删除 provider 后，清理所有项目 project.json 中的悬空引用。"""
+def _cleanup_project_refs(prefix: str, setting_keys: tuple[str, ...], user_id: str) -> None:
+    """删除 provider 后，清理当前用户项目 project.json 中的悬空引用。"""
     from lib.config.resolver import get_project_manager
 
-    pm = get_project_manager()
+    pm = project_manager_for_user(get_project_manager(), user_id)
     for proj_name in pm.list_projects():
         try:
 
@@ -258,7 +259,7 @@ async def list_providers(
     session: AsyncSession = Depends(get_async_session),
 ):
     """列出所有自定义供应商（含模型列表）。"""
-    repo = CustomProviderRepository(session)
+    repo = CustomProviderRepository(session, user_id=_user.id)
     pairs = await repo.list_providers_with_models()
     return {"providers": [_provider_to_response(p, models) for p, models in pairs]}
 
@@ -275,7 +276,7 @@ async def create_provider(
     if body.models:
         _check_duplicate_model_ids(body.models, _t)
         _check_unique_defaults(body.models, _t)
-    repo = CustomProviderRepository(session)
+    repo = CustomProviderRepository(session, user_id=_user.id)
     model_dicts = [m.to_db_dict() for m in body.models] if body.models else None
     provider = await repo.create_provider(
         display_name=body.display_name,
@@ -299,7 +300,7 @@ async def get_provider(
     session: AsyncSession = Depends(get_async_session),
 ):
     """获取单个自定义供应商详情。"""
-    repo = CustomProviderRepository(session)
+    repo = CustomProviderRepository(session, user_id=_user.id)
     provider = await repo.get_provider(provider_id)
     if provider is None:
         raise HTTPException(status_code=404, detail=_t("provider_not_found"))
@@ -317,7 +318,6 @@ async def update_provider(
     session: AsyncSession = Depends(get_async_session),
 ):
     """更新自定义供应商配置。"""
-    repo = CustomProviderRepository(session)
     kwargs = {}
     if body.display_name is not None:
         kwargs["display_name"] = body.display_name
@@ -329,6 +329,7 @@ async def update_provider(
     if not kwargs:
         raise HTTPException(status_code=400, detail=_t("at_least_one_field_required"))
 
+    repo = CustomProviderRepository(session, user_id=_user.id)
     provider = await repo.update_provider(provider_id, **kwargs)
     if provider is None:
         raise HTTPException(status_code=404, detail=_t("provider_not_found"))
@@ -352,7 +353,7 @@ async def full_update_provider(
     """原子更新供应商元数据 + 模型列表（单一事务）。"""
     _check_duplicate_model_ids(body.models, _t)
     _check_unique_defaults(body.models, _t)
-    repo = CustomProviderRepository(session)
+    repo = CustomProviderRepository(session, user_id=_user.id)
     kwargs: dict = {"display_name": body.display_name, "base_url": body.base_url}
     if body.api_key is not None:
         kwargs["api_key"] = body.api_key
@@ -377,7 +378,7 @@ async def delete_provider(
     session: AsyncSession = Depends(get_async_session),
 ):
     """删除自定义供应商（级联删除模型，清理悬空默认配置）。"""
-    repo = CustomProviderRepository(session)
+    repo = CustomProviderRepository(session, user_id=_user.id)
     provider = await repo.get_provider(provider_id)
     if provider is None:
         raise HTTPException(status_code=404, detail=_t("provider_not_found"))
@@ -386,7 +387,7 @@ async def delete_provider(
     # 清理引用该 provider 的全局默认 backend 配置
     from lib.config.service import ConfigService
 
-    svc = ConfigService(session)
+    svc = ConfigService(session, user_id=_user.id)
     for key in _BACKEND_SETTING_KEYS:
         val = await svc.get_setting(key, "")
         if val and val.startswith(prefix):
@@ -394,7 +395,7 @@ async def delete_provider(
     await session.commit()
     await _invalidate_caches(request)
     # 清理引用该 provider 的项目级配置（同步文件 I/O，放到线程池避免阻塞事件循环）
-    await asyncio.to_thread(_cleanup_project_refs, prefix, _BACKEND_SETTING_KEYS)
+    await asyncio.to_thread(_cleanup_project_refs, prefix, _BACKEND_SETTING_KEYS, _user.id)
 
 
 # ---------------------------------------------------------------------------
@@ -414,7 +415,7 @@ async def replace_models(
     """替换供应商的整个模型列表。"""
     _check_duplicate_model_ids(body.models, _t)
     _check_unique_defaults(body.models, _t)
-    repo = CustomProviderRepository(session)
+    repo = CustomProviderRepository(session, user_id=_user.id)
     provider = await repo.get_provider(provider_id)
     if provider is None:
         raise HTTPException(status_code=404, detail=_t("provider_not_found"))
@@ -431,7 +432,7 @@ async def replace_models(
     if deleted_model_ids:
         from lib.config.service import ConfigService
 
-        svc = ConfigService(session)
+        svc = ConfigService(session, user_id=_user.id)
         prefix = f"{make_provider_id(provider_id)}/"
         for key in _BACKEND_SETTING_KEYS:
             val = await svc.get_setting(key, "")
@@ -468,7 +469,7 @@ async def discover_models_by_id(
     session: AsyncSession = Depends(get_async_session),
 ):
     """使用已存储凭证发现指定供应商的可用模型。"""
-    repo = CustomProviderRepository(session)
+    repo = CustomProviderRepository(session, user_id=_user.id)
     provider = await repo.get_provider(provider_id)
     if provider is None:
         raise HTTPException(status_code=404, detail=_t("provider_not_found"))
@@ -490,7 +491,7 @@ async def test_connection_by_id(
     provider_id: int, _user: CurrentUser, _t: Translator, session: AsyncSession = Depends(get_async_session)
 ):
     """使用已存储凭证测试指定供应商的连通性。"""
-    repo = CustomProviderRepository(session)
+    repo = CustomProviderRepository(session, user_id=_user.id)
     provider = await repo.get_provider(provider_id)
     if provider is None:
         raise HTTPException(status_code=404, detail=_t("provider_not_found"))

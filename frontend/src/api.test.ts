@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { API, ConflictError } from "@/api";
+import { API, ApiRequestError, ConflictError } from "@/api";
 import type { TaskItem } from "@/types";
 
 type JsonResponseOptions = {
@@ -109,6 +109,7 @@ describe("API", () => {
       const fetchMock = vi.fn().mockResolvedValue(
         mockResponse({
           ok: false,
+          status: 402,
           jsonData: { detail: "boom" },
           statusText: "Bad Request",
         }),
@@ -116,6 +117,10 @@ describe("API", () => {
       vi.stubGlobal("fetch", fetchMock);
 
       await expect(API.request("/projects")).rejects.toThrow("boom");
+      await expect(API.request("/projects")).rejects.toMatchObject({
+        status: 402,
+        detail: "boom",
+      } satisfies Partial<ApiRequestError>);
     });
 
     it("falls back to statusText when error response is not JSON", async () => {
@@ -149,6 +154,26 @@ describe("API", () => {
       expect(clearTokenMock).toHaveBeenCalledTimes(1);
       expect(location.href).toBe("/login");
     });
+
+    it("clears auth and redirects when the current account is disabled", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(
+        mockResponse({
+          ok: false,
+          status: 403,
+          statusText: "Forbidden",
+          jsonData: { detail: "user is disabled" },
+        }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const clearTokenMock = vi.spyOn(await import("@/utils/auth"), "clearToken");
+      const location = { href: "/app/projects" };
+      vi.stubGlobal("location", location);
+
+      await expect(API.request("/projects")).rejects.toThrow("账号已停用，请联系管理员");
+
+      expect(clearTokenMock).toHaveBeenCalledTimes(1);
+      expect(location.href).toBe("/login");
+    });
   });
 
   describe("request-based wrappers", () => {
@@ -161,27 +186,64 @@ describe("API", () => {
       await API.createProject({ title: "Demo" });
       await API.createProject({ title: "Untitled" });
       await API.getProject("a b");
+      await API.getProjectMembers("a b");
+      await API.addProjectMember("a b", "alice");
+      await API.upsertProjectMember("a b", "user-c");
+      await API.deleteProjectMember("a b", "user-c");
       await API.updateProject("demo", { style: "Anime" });
       await API.deleteProject("demo");
 
       await API.addCharacter("demo", "Hero", "brave");
       await API.updateCharacter("demo", "Hero", { description: "updated" });
       await API.deleteCharacter("demo", "Hero");
+      await API.generateProjectCharacters("demo");
 
       await API.addProjectScene("demo", "Temple", "ancient");
       await API.updateProjectScene("demo", "Temple", { description: "dark" });
       await API.deleteProjectScene("demo", "Temple");
+      await API.generateProjectScenes("demo");
       await API.addProjectProp("demo", "Sword", "rusty");
       await API.updateProjectProp("demo", "Sword", { description: "shiny" });
       await API.deleteProjectProp("demo", "Sword");
+      await API.generateProjectProps("demo");
 
       await API.getScript("demo", "episode 1.json");
+      await API.generateEpisodeDraft("demo", 1);
+      await API.generateEpisodeScript("demo", 1);
       await API.updateScene("demo", "scene-1", "episode_1.json", { x: 1 });
       await API.updateSegment("demo", "segment-1", { y: 2 });
 
       await API.getSystemConfig();
       await API.getSystemVersion();
       await API.updateSystemConfig({ default_image_backend: "vertex" });
+      await API.getProjectNamespaceMigrationPreview();
+      await API.runProjectNamespaceMigration();
+      await API.getAuthCapabilities();
+      await API.register({ username: "alice", password: "password123" });
+      await API.verifyAuth();
+      await API.searchUsers("ali");
+      await API.listUsers("ali");
+      await API.createUser({ username: "bob", password: "password123", role: "user" });
+      await API.updateUser("user_alice", { role: "admin", is_active: true });
+      await API.getUserCreditBalance("user_alice");
+      await API.getCreditReconciliation();
+      await API.getCreditReconciliationAudits();
+      await API.runCreditReconciliationAction({ action: "release_stale_reservations" });
+      await API.addCreditReconciliationNote({ note: "checked" });
+      await API.acknowledgeCreditReconciliationIssue({
+        note: "checked",
+        issue_code: "usage_task_unmatched",
+        reference_type: "task",
+        reference_id: "task-1",
+      });
+      await API.reopenCreditReconciliationIssue({
+        note: "reopen",
+        issue_code: "usage_task_unmatched",
+        reference_type: "task",
+        reference_id: "task-1",
+      });
+      await API.grantCredits({ amount: 1000, description: "manual" });
+      await API.cancelCreditOrder("co_demo");
       await API.listFiles("demo");
       await API.listDrafts("demo");
       await API.deleteDraft("demo", 1, 2);
@@ -190,6 +252,11 @@ describe("API", () => {
 
       await API.generateStoryboard("demo", "seg-1", "img", "episode_1.json");
       await API.generateVideo("demo", "seg-1", "vid", "episode_1.json");
+      await API.requestGenerationPreflight("demo", {
+        task_type: "video",
+        resource_id: "seg-1",
+        payload: { script_file: "episode_1.json", duration_seconds: 4 },
+      });
       await API.generateCharacter("demo", "Hero", "prompt");
       await API.generateProjectScene("demo", "Temple", "prompt");
       await API.generateProjectProp("demo", "Sword", "prompt");
@@ -204,6 +271,18 @@ describe("API", () => {
         body: JSON.stringify({ title: "Untitled" }),
       });
       expect(requestSpy).toHaveBeenCalledWith("/projects/a%20b");
+      expect(requestSpy).toHaveBeenCalledWith("/projects/a%20b/members");
+      expect(requestSpy).toHaveBeenCalledWith("/projects/a%20b/members", {
+        method: "POST",
+        body: JSON.stringify({ identifier: "alice", role: "editor" }),
+      });
+      expect(requestSpy).toHaveBeenCalledWith("/projects/a%20b/members/user-c", {
+        method: "PUT",
+        body: JSON.stringify({ user_id: "user-c", role: "editor" }),
+      });
+      expect(requestSpy).toHaveBeenCalledWith("/projects/a%20b/members/user-c", {
+        method: "DELETE",
+      });
       expect(requestSpy).toHaveBeenCalledWith("/projects/demo", {
         method: "PATCH",
         body: JSON.stringify({ style: "Anime" }),
@@ -219,17 +298,34 @@ describe("API", () => {
           voice_style: "",
         }),
       });
+      expect(requestSpy).toHaveBeenCalledWith("/projects/demo/generate-characters", {
+        method: "POST",
+      });
       expect(requestSpy).toHaveBeenCalledWith("/projects/demo/scenes", {
         method: "POST",
         body: JSON.stringify({ name: "Temple", description: "ancient" }),
+      });
+      expect(requestSpy).toHaveBeenCalledWith("/projects/demo/generate-scenes", {
+        method: "POST",
       });
       expect(requestSpy).toHaveBeenCalledWith("/projects/demo/props", {
         method: "POST",
         body: JSON.stringify({ name: "Sword", description: "rusty" }),
       });
+      expect(requestSpy).toHaveBeenCalledWith("/projects/demo/generate-props", {
+        method: "POST",
+      });
       expect(requestSpy).toHaveBeenCalledWith(
         "/projects/demo/scripts/episode%201.json",
       );
+      expect(requestSpy).toHaveBeenCalledWith("/projects/demo/generate-episode-draft", {
+        method: "POST",
+        body: JSON.stringify({ episode: 1 }),
+      });
+      expect(requestSpy).toHaveBeenCalledWith("/projects/demo/generate-episode-script", {
+        method: "POST",
+        body: JSON.stringify({ episode: 1 }),
+      });
       expect(requestSpy).toHaveBeenCalledWith("/projects/demo/scenes/scene-1", {
         method: "PATCH",
         body: JSON.stringify({ script_file: "episode_1.json", updates: { x: 1 } }),
@@ -244,12 +340,76 @@ describe("API", () => {
         method: "PATCH",
         body: JSON.stringify({ default_image_backend: "vertex" }),
       });
+      expect(requestSpy).toHaveBeenCalledWith("/system/project-namespace-migration");
+      expect(requestSpy).toHaveBeenCalledWith("/system/project-namespace-migration", {
+        method: "POST",
+      });
+      expect(requestSpy).toHaveBeenCalledWith("/auth/capabilities");
+      expect(requestSpy).toHaveBeenCalledWith("/auth/register", {
+        method: "POST",
+        body: JSON.stringify({ username: "alice", password: "password123" }),
+      });
+      expect(requestSpy).toHaveBeenCalledWith("/auth/verify");
+      expect(requestSpy).toHaveBeenCalledWith("/auth/users/search?query=ali&limit=10");
+      expect(requestSpy).toHaveBeenCalledWith("/auth/users?query=ali&limit=50");
+      expect(requestSpy).toHaveBeenCalledWith("/auth/users", {
+        method: "POST",
+        body: JSON.stringify({ username: "bob", password: "password123", role: "user" }),
+      });
+      expect(requestSpy).toHaveBeenCalledWith("/auth/users/user_alice", {
+        method: "PATCH",
+        body: JSON.stringify({ role: "admin", is_active: true }),
+      });
+      expect(requestSpy).toHaveBeenCalledWith("/billing/admin/users/user_alice/credits");
+      expect(requestSpy).toHaveBeenCalledWith("/billing/credits/reconciliation");
+      expect(requestSpy).toHaveBeenCalledWith("/billing/credits/reconciliation/audits");
+      expect(requestSpy).toHaveBeenCalledWith("/billing/credits/reconciliation/actions", {
+        method: "POST",
+        body: JSON.stringify({ action: "release_stale_reservations" }),
+      });
+      expect(requestSpy).toHaveBeenCalledWith("/billing/credits/reconciliation/notes", {
+        method: "POST",
+        body: JSON.stringify({ note: "checked" }),
+      });
+      expect(requestSpy).toHaveBeenCalledWith("/billing/credits/reconciliation/acknowledgements", {
+        method: "POST",
+        body: JSON.stringify({
+          note: "checked",
+          issue_code: "usage_task_unmatched",
+          reference_type: "task",
+          reference_id: "task-1",
+        }),
+      });
+      expect(requestSpy).toHaveBeenCalledWith("/billing/credits/reconciliation/reopenings", {
+        method: "POST",
+        body: JSON.stringify({
+          note: "reopen",
+          issue_code: "usage_task_unmatched",
+          reference_type: "task",
+          reference_id: "task-1",
+        }),
+      });
+      expect(requestSpy).toHaveBeenCalledWith("/billing/credits/grant", {
+        method: "POST",
+        body: JSON.stringify({ amount: 1000, description: "manual" }),
+      });
+      expect(requestSpy).toHaveBeenCalledWith("/billing/credits/orders/co_demo/cancel", {
+        method: "POST",
+      });
       expect(requestSpy).toHaveBeenCalledWith("/projects/demo/generate/video/seg-1", {
         method: "POST",
         body: JSON.stringify({
           prompt: "vid",
           script_file: "episode_1.json",
           duration_seconds: 4,
+        }),
+      });
+      expect(requestSpy).toHaveBeenCalledWith("/projects/demo/generate/preflight", {
+        method: "POST",
+        body: JSON.stringify({
+          task_type: "video",
+          resource_id: "seg-1",
+          payload: { script_file: "episode_1.json", duration_seconds: 4 },
         }),
       });
     });
@@ -298,6 +458,7 @@ describe("API", () => {
         pageSize: 20,
       });
       await API.getTaskStats("demo");
+      await API.retryTask("task id");
       await API.getVersions("demo", "storyboards", "seg-1");
       await API.restoreVersion("demo", "storyboards", "seg-1", 3);
 
@@ -334,6 +495,9 @@ describe("API", () => {
         "/projects/demo/tasks?status=failed&task_type=image&source=agent&page=3&page_size=20",
       );
       expect(requestSpy).toHaveBeenCalledWith("/tasks/stats?project_name=demo");
+      expect(requestSpy).toHaveBeenCalledWith("/tasks/task%20id/retry", {
+        method: "POST",
+      });
       expect(requestSpy).toHaveBeenCalledWith(
         "/projects/demo/assistant/sessions?status=running",
       );
@@ -347,6 +511,16 @@ describe("API", () => {
       expect(requestSpy).toHaveBeenCalledWith("/usage/projects");
     });
 
+    it("unwraps getTask response envelope", async () => {
+      const task = makeTask({ task_id: "task id" });
+      const requestSpy = vi
+        .spyOn(API, "request")
+        .mockResolvedValue({ task } as never);
+
+      await expect(API.getTask("task id")).resolves.toEqual(task);
+      expect(requestSpy).toHaveBeenCalledWith("/tasks/task%20id");
+    });
+
     it("builds static file and stream urls", () => {
       expect(API.getFileUrl("my project", "source/a.txt")).toBe(
         "/api/v1/files/my%20project/source/a.txt",
@@ -357,6 +531,24 @@ describe("API", () => {
       expect(API.getAssistantStreamUrl("demo", "session-1")).toBe(
         "/api/v1/projects/demo/assistant/sessions/session-1/stream",
       );
+
+      window.localStorage.setItem("scenelet_auth_token", "jwt-demo");
+      expect(API.getFileUrl("my project", "source/a.txt")).toBe(
+        "/api/v1/files/my%20project/source/a.txt?token=jwt-demo",
+      );
+      expect(API.getFileUrl("my project", "source/a.txt", 3)).toBe(
+        "/api/v1/files/my%20project/source/a.txt?v=3&token=jwt-demo",
+      );
+    });
+
+    it("migrates legacy auth tokens when building authenticated file urls", () => {
+      window.localStorage.setItem("arcreel_auth_token", "jwt-legacy");
+
+      expect(API.getFileUrl("my project", "source/a.txt")).toBe(
+        "/api/v1/files/my%20project/source/a.txt?token=jwt-legacy",
+      );
+      expect(window.localStorage.getItem("scenelet_auth_token")).toBe("jwt-legacy");
+      expect(window.localStorage.getItem("arcreel_auth_token")).toBeNull();
     });
 
     it("createProject sends object body with style_template_id and model fields", async () => {
@@ -495,6 +687,236 @@ describe("API", () => {
       expect(res.success).toBe(true);
       expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/projects/demo/style-image");
       expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe("POST");
+    });
+
+    it("requests an export token and normalizes the delivery report", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(
+        mockResponse({
+          jsonData: {
+            download_token: "download-token",
+            expires_in: 300,
+            diagnostics: {
+              blocking: [],
+              auto_fixed: [],
+              warnings: [{ code: "extra", message: "额外提醒", ignored: true }],
+            },
+            delivery_report: {
+              format_version: 1,
+              status: "needs_work",
+              generated_at: "2026-05-02T00:00:00+08:00",
+              totals: {
+                episodes: 1,
+                ready_episodes: 0,
+                scripts_ready: 1,
+                storyboards_ready: 1,
+                storyboards_total: 1,
+                videos_ready: 0,
+                videos_total: 1,
+                blocking_issues: 1,
+                warnings: 0,
+              },
+              episodes: [
+                {
+                  episode: 1,
+                  title: "EP1",
+                  script_file: "scripts/episode_1.json",
+                  script_ready: true,
+                  status: "needs_work",
+                  storyboards: { ready: 1, total: 1, missing: [] },
+                  videos: { ready: 0, total: 1, missing: ["E1S01"] },
+                  blocking_issues: [
+                    { code: "missing_videos", message: "1 个视频未生成", items: ["E1S01"] },
+                  ],
+                  warnings: [],
+                },
+              ],
+              travel_route: {
+                route_ready: true,
+                source: "reference_images",
+                origin: "难波站",
+                destination: "黑门市场",
+                summary: "沿千日前通步行到黑门市场。",
+                nodes_total: 2,
+                nodes_covered: 1,
+                reference_images_count: 3,
+                usable_reference_images_count: 2,
+                nodes: [
+                  {
+                    id: "node-1",
+                    label: "千日前通",
+                    covered: true,
+                    matched_units: ["E1U1"],
+                    ignored: true,
+                  },
+                ],
+              },
+              model_rule_audit: {
+                total: 2,
+                by_mode: { github_skill: 1, prompt: 1, ignored: "x" },
+                by_media_type: { video: 1, image: 1 },
+                artifact_files: ["output/scenelet-model-rule-audit.json"],
+              },
+            },
+            travel_route_assets: {
+              format_version: 1,
+              generated_at: "2026-05-02T00:00:00+08:00",
+              route: {
+                route_ready: true,
+                source: "reference_images",
+                origin: "难波站",
+                destination: "黑门市场",
+                summary: "沿千日前通步行到黑门市场。",
+              },
+              node_coverage: {
+                total: 2,
+                covered: 1,
+                missing: ["node-2"],
+              },
+              reference_images: {
+                total: 1,
+                usable: 1,
+                items: [
+                  {
+                    id: "reference-1",
+                    path: "travel_references/street.png",
+                    kind: "local",
+                    usable: true,
+                    html_src: "../travel_references/street.png",
+                    used_by_nodes: ["node-1"],
+                  },
+                ],
+              },
+              nodes: [
+                {
+                  id: "node-1",
+                  label: "千日前通",
+                  covered: true,
+                  matched_units: ["E1U1"],
+                  matched_unit_details: [
+                    {
+                      id: "E1U1",
+                      episode: 1,
+                      title: "EP1",
+                      script_file: "scripts/episode_1.json",
+                      video_clip: "reference_videos/E1U1.mp4",
+                      video_thumbnail: "reference_videos/thumbnails/E1U1.jpg",
+                      status: "completed",
+                    },
+                  ],
+                  reference_images: ["travel_references/street.png"],
+                },
+              ],
+            },
+            model_rule_audit: {
+              format_version: 1,
+              project_name: "demo project",
+              generated_at: "2026-05-02T00:00:00+08:00",
+              total: 1,
+              by_mode: { github_skill: 1 },
+              by_media_type: { video: 1 },
+              artifact_files: [
+                "output/scenelet-model-rule-audit.json",
+                "output/scenelet-model-rule-audit.md",
+              ],
+              items: [
+                {
+                  task_id: "task-video-1",
+                  task_type: "video",
+                  media_type: "video",
+                  resource_id: "E1S01",
+                  script_file: "scripts/episode_1.json",
+                  status: "succeeded",
+                  source: "webui",
+                  updated_at: "2026-05-02T00:02:00+08:00",
+                  rule: {
+                    media_type: "video",
+                    mode: "github_skill",
+                    mode_label: "GitHub Skill",
+                    provider_id: "runway",
+                    model_id: "gen-4",
+                    target_label: "Runway · gen-4",
+                    skill_name: "cinematic-skill",
+                    billing_mode: "platform_credits",
+                  },
+                },
+              ],
+            },
+          },
+        }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      const result = await API.requestExportToken("demo project", "current");
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/v1/projects/demo%20project/export/token?scope=current",
+        expect.objectContaining({ method: "POST" }),
+      );
+      expect(result.diagnostics.warnings).toEqual([{ code: "extra", message: "额外提醒" }]);
+      expect(result.delivery_report?.status).toBe("needs_work");
+      expect(result.delivery_report?.episodes[0]?.videos.missing).toEqual(["E1S01"]);
+      expect(result.delivery_report?.episodes[0]?.blocking_issues[0]?.items).toEqual(["E1S01"]);
+      expect(result.delivery_report?.travel_route?.nodes_covered).toBe(1);
+      expect(result.delivery_report?.travel_route?.usable_reference_images_count).toBe(2);
+      expect(result.delivery_report?.travel_route?.nodes[0]?.matched_units).toEqual(["E1U1"]);
+      expect(result.delivery_report?.model_rule_audit?.total).toBe(2);
+      expect(result.delivery_report?.model_rule_audit?.by_mode).toEqual({ github_skill: 1, prompt: 1 });
+      expect(result.delivery_report?.model_rule_audit?.artifact_files).toEqual(["output/scenelet-model-rule-audit.json"]);
+      expect(result.model_rule_audit?.total).toBe(1);
+      expect(result.model_rule_audit?.items[0]?.rule.skill_name).toBe("cinematic-skill");
+      expect(result.travel_route_assets?.node_coverage.covered).toBe(1);
+      expect(result.travel_route_assets?.reference_images.items[0]?.path).toBe("travel_references/street.png");
+      expect(result.travel_route_assets?.nodes[0]?.reference_images).toEqual(["travel_references/street.png"]);
+      expect(result.travel_route_assets?.nodes[0]?.matched_unit_details?.[0]).toEqual({
+        id: "E1U1",
+        episode: 1,
+        title: "EP1",
+        script_file: "scripts/episode_1.json",
+        video_clip: "reference_videos/E1U1.mp4",
+        video_thumbnail: "reference_videos/thumbnails/E1U1.jpg",
+        status: "completed",
+      });
+    });
+
+    it("requests export preflight without a download token", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(
+        mockResponse({
+          jsonData: {
+            diagnostics: {
+              blocking: [],
+              auto_fixed: [{ code: "fixed", message: "自动修复" }],
+              warnings: [],
+            },
+            delivery_report: {
+              format_version: 1,
+              status: "ready",
+              totals: {
+                episodes: 0,
+                ready_episodes: 0,
+                scripts_ready: 0,
+                storyboards_ready: 0,
+                storyboards_total: 0,
+                videos_ready: 0,
+                videos_total: 0,
+                blocking_issues: 0,
+                warnings: 0,
+              },
+              episodes: [],
+            },
+            travel_route_assets: null,
+          },
+        }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      const result = await API.requestExportPreflight("demo project", "current");
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/v1/projects/demo%20project/export/preflight?scope=current",
+        expect.objectContaining({ method: "POST" }),
+      );
+      expect(result.diagnostics.auto_fixed).toEqual([{ code: "fixed", message: "自动修复" }]);
+      expect(result.delivery_report?.status).toBe("ready");
     });
 
     it("imports project via multipart form and preserves structured errors", async () => {
@@ -733,6 +1155,25 @@ describe("API", () => {
       await API.addAssetFromProject({ project_name: "demo", resource_type: "character", resource_id: "王" });
       expect(fetchMock).toHaveBeenCalledWith(
         expect.stringContaining("/api/v1/assets/from-project"),
+        expect.objectContaining({ method: "POST" })
+      );
+    });
+  });
+
+  describe("addAssetFromProjectFile", () => {
+    it("POSTs /api/v1/assets/from-project-file", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(
+        mockResponse({ jsonData: { asset: { id: "x", type: "scene", name: "osaka-map", description: "", voice_style: "", image_path: "_global_assets/scene/x.png", source_project: "demo", updated_at: null } } }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      await API.addAssetFromProjectFile({
+        project_name: "demo",
+        file_path: "travel_references/osaka-map.png",
+        asset_type: "scene",
+        conflict_policy: "rename",
+      });
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining("/api/v1/assets/from-project-file"),
         expect.objectContaining({ method: "POST" })
       );
     });

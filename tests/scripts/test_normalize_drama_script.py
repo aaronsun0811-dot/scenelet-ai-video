@@ -92,3 +92,21 @@ def test_prompt_with_empty_supported_durations_degrades_gracefully(module):
     # 不应有明确数值锚点
     assert "4、6 或 8 秒" not in prompt
     assert "默认 8 秒" not in prompt
+
+
+def test_prompt_includes_content_workflow_when_provided(module):
+    prompt = module.build_normalize_prompt(
+        novel_text="novel",
+        project_overview=_OVERVIEW,
+        style="国漫",
+        characters={"A": {}},
+        scenes={"酒馆": {}},
+        props={},
+        default_duration=8,
+        supported_durations=[4, 6, 8],
+        workflow_instructions="内容类型：情景剧\n执行规则：\n- 保留角色反应、停顿、眼神和走位",
+    )
+    assert "<workflow>" in prompt
+    assert "内容类型：情景剧" in prompt
+    assert "保留角色反应" in prompt
+    assert "优先遵循其中的内容类型目标" in prompt

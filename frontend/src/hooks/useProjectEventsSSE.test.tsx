@@ -161,7 +161,7 @@ describe("useProjectEventsSSE", () => {
     expect(useAppStore.getState().scrollTarget).toBeNull();
   });
 
-  it("shows a toast without navigation for generation completion batches", async () => {
+  it("shows an actionable toast without auto-navigation for generation completion batches", async () => {
     let capturedOptions: ProjectEventStreamOptions | undefined;
     vi.spyOn(API, "openProjectEventStream").mockImplementation((options) => {
       capturedOptions = options;
@@ -203,7 +203,11 @@ describe("useProjectEventsSSE", () => {
       expect.objectContaining({
         text: "分镜「E1S01」的分镜图已生成",
         tone: "success",
-        target: null,
+        target: expect.objectContaining({
+          type: "segment",
+          id: "E1S01",
+          route: "/episodes/1",
+        }),
       }),
     );
     expect(screen.getByTestId("location")).toHaveTextContent("/episodes/1");

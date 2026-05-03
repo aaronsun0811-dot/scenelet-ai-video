@@ -1,58 +1,66 @@
 
 import { useEffect, useMemo } from "react";
 import { Link, useLocation, useSearch } from "wouter";
-import { AlertTriangle, BarChart3, Bot, ChevronLeft, Film, Info, KeyRound, Languages, Plug } from "lucide-react";
+import { AlertTriangle, ChevronLeft, FolderOpen, LogOut, Package } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { useAuthStore } from "@/stores/auth-store";
 import { useConfigStatusStore } from "@/stores/config-status-store";
+import { useProjectsStore } from "@/stores/projects-store";
+import { LanguageSwitch } from "@/components/ui/LanguageSwitch";
+import { AppSidebar } from "@/components/layout/AppSidebar";
 import { AgentConfigTab } from "./AgentConfigTab";
 import { ApiKeysTab } from "./ApiKeysTab";
+import { CreateProjectModal } from "./CreateProjectModal";
 import { AboutSection } from "./settings/AboutSection";
 import { MediaModelSection } from "./settings/MediaModelSection";
 import { ProviderSection } from "./ProviderSection";
 import { UsageStatsSection } from "./settings/UsageStatsSection";
+import { StripeSandboxSection } from "./settings/StripeSandboxSection";
+import { ProjectNamespaceMigrationSection } from "./settings/ProjectNamespaceMigrationSection";
+import { UserAdminSection } from "./settings/UserAdminSection";
+import { TravelMapSettingsSection } from "./settings/TravelMapSettingsSection";
+import { rememberAssetLibraryReturnTo } from "@/utils/asset-library-return";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-type SettingsSection = "agent" | "providers" | "media" | "usage" | "api-keys" | "about";
-
-// ---------------------------------------------------------------------------
-// Sidebar navigation config
-// ---------------------------------------------------------------------------
-
-const SECTION_LIST: { id: SettingsSection; labelKey: string; Icon: React.ComponentType<{ className?: string }> }[] = [
-  { id: "agent", labelKey: "dashboard:agents", Icon: Bot },
-  { id: "providers", labelKey: "dashboard:providers", Icon: Plug },
-  { id: "media", labelKey: "dashboard:models", Icon: Film },
-  { id: "usage", labelKey: "dashboard:usage", Icon: BarChart3 },
-  { id: "api-keys", labelKey: "dashboard:api_keys", Icon: KeyRound },
-  { id: "about", labelKey: "dashboard:about", Icon: Info },
-];
+type SettingsSection = "agent" | "providers" | "media" | "maps" | "usage" | "billing" | "users" | "maintenance" | "api-keys" | "about";
 
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
 export function SystemConfigPage() {
-  const { t, i18n } = useTranslation(["common", "dashboard"]);
+  const { t } = useTranslation(["common", "dashboard", "assets"]);
   const [location, navigate] = useLocation();
   const search = useSearch();
+  const logout = useAuthStore((s) => s.logout);
+  const showCreateModal = useProjectsStore((s) => s.showCreateModal);
+  const setShowCreateModal = useProjectsStore((s) => s.setShowCreateModal);
 
   const activeSection = useMemo((): SettingsSection => {
     const section = new URLSearchParams(search).get("section");
     if (section === "providers") return "providers";
     if (section === "media") return "media";
+    if (section === "maps") return "maps";
     if (section === "usage") return "usage";
+    if (section === "billing") return "billing";
+    if (section === "users") return "users";
+    if (section === "maintenance") return "maintenance";
     if (section === "api-keys") return "api-keys";
     if (section === "about") return "about";
     return "agent";
   }, [search]);
 
-  const setActiveSection = (section: SettingsSection) => {
-    const params = new URLSearchParams(search);
-    params.set("section", section);
-    navigate(`${location}?${params.toString()}`, { replace: true });
+  const handleLogout = () => {
+    logout();
+    navigate("/login", { replace: true });
+  };
+
+  const openAssetLibrary = () => {
+    rememberAssetLibraryReturnTo(`${location}${search ? `?${search}` : ""}`);
+    navigate("/app/assets");
   };
 
   const configIssues = useConfigStatusStore((s) => s.issues);
@@ -70,65 +78,62 @@ export function SystemConfigPage() {
     <div className="flex h-screen flex-col bg-gray-950 text-gray-100">
       {/* Page header */}
       <header className="shrink-0 border-b border-gray-800 px-6 py-4">
-        <div className="flex items-center gap-3">
-          <Link
-            href="/app/projects"
-            className="inline-flex items-center gap-2 rounded-lg border border-gray-800 bg-gray-900 px-3 py-2 text-sm text-gray-200 hover:border-gray-700 hover:bg-gray-800 focus-ring"
-            aria-label={t("common:back")}
-          >
-            <ChevronLeft className="h-4 w-4" />
-            {t("common:back")}
-          </Link>
-          <div>
-            <h1 className="text-lg font-semibold text-gray-100">{t("common:settings")}</h1>
-            <p className="text-xs text-gray-500">{t("dashboard:system_config_title")}</p>
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <Link
+              href="/app/projects"
+              className="inline-flex items-center gap-2 rounded-lg border border-gray-800 bg-gray-900 px-3 py-2 text-sm text-gray-200 hover:border-gray-700 hover:bg-gray-800 focus-ring"
+              aria-label={t("common:back")}
+            >
+              <ChevronLeft className="h-4 w-4" />
+              {t("common:back")}
+            </Link>
+            <div>
+              <h1 className="text-lg font-semibold text-gray-100">{t("common:settings")}</h1>
+              <p className="text-xs text-gray-500">{t("dashboard:system_config_title")}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => navigate("/app/projects")}
+              aria-label="顶部创作项目"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-gray-800 bg-gray-900 px-3 py-1.5 text-sm text-gray-200 transition-colors hover:border-gray-600 hover:bg-gray-800"
+            >
+              <FolderOpen className="h-4 w-4" />
+              {t("dashboard:projects")}
+            </button>
+            <button
+              type="button"
+              onClick={openAssetLibrary}
+              aria-label="顶部资产库"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-500/20 bg-indigo-500/10 px-3 py-1.5 text-sm text-indigo-200 transition-colors hover:border-indigo-400/40 hover:bg-indigo-500/15 hover:text-white"
+            >
+              <Package className="h-4 w-4" />
+              {t("assets:library_title")}
+            </button>
+            <LanguageSwitch showLabel />
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="inline-flex items-center gap-1.5 rounded-md border border-gray-800 bg-gray-900/70 px-3 py-1.5 text-sm text-gray-300 transition-colors hover:border-gray-700 hover:bg-gray-800 hover:text-white"
+              aria-label={t("common:logout")}
+            >
+              <LogOut className="h-4 w-4" />
+              <span className="hidden sm:inline">{t("common:logout")}</span>
+            </button>
           </div>
         </div>
       </header>
 
       {/* Body: sidebar + content */}
       <div className="flex min-h-0 flex-1">
-        {/* Sidebar */}
-        <nav className="w-48 shrink-0 border-r border-gray-800 bg-gray-950/50 py-4">
-          {SECTION_LIST.map(({ id, labelKey, Icon }) => {
-            const isActive = activeSection === id;
-            const hasIssue = (id === "providers" || id === "agent" || id === "media") && configIssues.length > 0;
-
-            return (
-              <button
-                key={id}
-                type="button"
-                onClick={() => setActiveSection(id)}
-                className={`flex w-full items-center gap-3 px-4 py-2.5 text-sm transition-colors focus-ring focus-visible:ring-inset ${
-                  isActive
-                    ? "border-l-2 border-indigo-500 bg-gray-800/50 text-white"
-                    : "border-l-2 border-transparent text-gray-400 hover:bg-gray-800/30 hover:text-gray-200"
-                }`}
-              >
-                <Icon className="h-4 w-4" />
-                <span className="flex-1 text-left">{t(labelKey)}</span>
-                {hasIssue && <AlertTriangle className="h-3 w-3 text-rose-500" />}
-              </button>
-            );
-          })}
-
-          {/* Language toggle */}
-          <div className="my-3 mx-4 border-t border-gray-800" />
-          <button
-            type="button"
-            onClick={() => {
-              const nextLang = i18n.language.startsWith("zh") ? "en" : "zh";
-              void i18n.changeLanguage(nextLang);
-            }}
-            className="flex w-full items-center gap-3 px-4 py-2.5 text-sm border-l-2 border-transparent text-gray-400 hover:bg-gray-800/30 hover:text-gray-200 transition-colors focus-ring focus-visible:ring-inset"
-          >
-            <Languages className="h-4 w-4" />
-            <span className="flex-1 text-left">{t("dashboard:language_setting")}</span>
-            <span className="rounded bg-gray-800 px-1.5 py-0.5 text-[10px] font-bold uppercase text-gray-400">
-              {i18n.language.split("-")[0]}
-            </span>
-          </button>
-        </nav>
+        <AppSidebar
+          activeSettingsSection={activeSection}
+          responsive={false}
+          onImportZip={() => navigate("/app/projects?importZip=1")}
+          onCreateProject={() => setShowCreateModal(true)}
+        />
 
         {/* Content area — main is the scroll container.
             providers section bypasses the centered padded wrapper so its sticky bottom bar
@@ -161,7 +166,11 @@ export function SystemConfigPage() {
 
               {activeSection === "agent" && <AgentConfigTab visible />}
               {activeSection === "media" && <MediaModelSection />}
+              {activeSection === "maps" && <TravelMapSettingsSection />}
               {activeSection === "usage" && <UsageStatsSection />}
+              {activeSection === "billing" && <StripeSandboxSection />}
+              {activeSection === "users" && <UserAdminSection />}
+              {activeSection === "maintenance" && <ProjectNamespaceMigrationSection />}
               {activeSection === "api-keys" && (
                 <div className="p-6">
                   <ApiKeysTab />
@@ -172,6 +181,7 @@ export function SystemConfigPage() {
           )}
         </main>
       </div>
+      {showCreateModal && <CreateProjectModal />}
     </div>
   );
 }

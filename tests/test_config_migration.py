@@ -1,4 +1,5 @@
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -101,3 +102,30 @@ async def test_migrate_aistudio_001_to_preview(session: AsyncSession, tmp_path: 
 async def test_migrate_noop_if_no_file(session: AsyncSession, tmp_path: Path):
     nonexistent = tmp_path / ".system_config.json"
     await migrate_json_to_db(session, nonexistent)  # should not raise
+
+
+async def test_migrate_invalid_json_logs_safe_message(session: AsyncSession, tmp_path: Path, caplog):
+    p = tmp_path / ".system_config.json"
+    p.write_text('{"overrides":{"gemini_api_key":"AIza-SECRET-should-not-log",')
+
+    with caplog.at_level(logging.WARNING, logger="lib.config.migration"):
+        await migrate_json_to_db(session, p)
+
+    assert p.exists()
+    assert "invalid JSON at line" in caplog.text
+    assert "AIza-SECRET-should-not-log" not in caplog.text
+
+
+async def test_migrate_unknown_key_warning_does_not_log_value(
+    session: AsyncSession,
+    tmp_path: Path,
+    caplog,
+):
+    p = tmp_path / ".system_config.json"
+    p.write_text(json.dumps({"overrides": {"future_api_secret": "SECRET-should-not-log"}}))
+
+    with caplog.at_level(logging.WARNING, logger="lib.config.migration"):
+        await migrate_json_to_db(session, p)
+
+    assert "future_api_secret" in caplog.text
+    assert "SECRET-should-not-log" not in caplog.text

@@ -3,8 +3,11 @@
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+import lib
 from lib.db.base import Base
+from lib.db.repositories.credit_repository import CreditRepository
 from lib.db.repositories.usage_repo import UsageRepository
+from lib.project_manager import ProjectManager
 
 
 @pytest.fixture
@@ -77,6 +80,25 @@ class TestUsageRepository:
         projects = await repo.get_projects_list()
         assert set(projects) == {"project_a", "project_b"}
 
+    async def test_read_queries_can_be_scoped_by_user(self, db_session):
+        repo = UsageRepository(db_session)
+        await repo.start_call(project_name="project_a", call_type="image", model="m", user_id="user-a")
+        await repo.start_call(project_name="project_b", call_type="video", model="m", user_id="user-b")
+
+        scoped = UsageRepository(db_session, user_id="user-a")
+
+        calls = await scoped.get_calls()
+        assert calls["total"] == 1
+        assert calls["items"][0]["project_name"] == "project_a"
+
+        stats = await scoped.get_stats()
+        assert stats["total_count"] == 1
+        assert stats["image_count"] == 1
+        assert stats["video_count"] == 0
+
+        projects = await scoped.get_projects_list()
+        assert projects == ["project_a"]
+
     async def test_pagination(self, db_session):
         repo = UsageRepository(db_session)
         for i in range(5):
@@ -88,6 +110,111 @@ class TestUsageRepository:
 
         page2 = await repo.get_calls(page=2, page_size=2)
         assert len(page2["items"]) == 2
+
+    async def test_platform_credits_project_debits_actual_cost(self, db_session, tmp_path, monkeypatch):
+        project_dir = tmp_path / "projects" / "demo"
+        project_dir.mkdir(parents=True)
+        (project_dir / "project.json").write_text('{"title":"Demo","billing_mode":"platform_credits"}')
+        monkeypatch.setattr(lib, "PROJECT_ROOT", tmp_path)
+
+        credit_repo = CreditRepository(db_session, user_id="user-a")
+        await credit_repo.add_entry(amount=1000, kind="grant")
+
+        repo = UsageRepository(db_session)
+        call_id = await repo.start_call(
+            project_name="demo",
+            call_type="image",
+            model="gemini-3.1-flash-image-preview",
+            resolution="1K",
+            user_id="user-a",
+            segment_id="E1S01",
+        )
+        await repo.finish_call(call_id, status="success")
+
+        assert await credit_repo.get_balance() == 933
+        entries = await credit_repo.list_entries()
+        usage_entry = next(entry for entry in entries if entry["kind"] == "generation_usage")
+        assert usage_entry["metadata"]["resource_id"] == "E1S01"
+        assert usage_entry["metadata"]["segment_id"] == "E1S01"
+
+    async def test_platform_credits_debit_uses_user_namespaced_project(self, db_session, tmp_path, monkeypatch):
+        base = ProjectManager(tmp_path / "projects")
+        alice = base.for_user("alice")
+        bob = base.for_user("bob")
+        alice.create_project("same")
+        alice.create_project_metadata(
+            "same",
+            "Alice Same",
+            extras={"owner_user_id": "alice", "billing_mode": "platform_credits"},
+        )
+        bob.create_project("same")
+        bob.create_project_metadata(
+            "same",
+            "Bob Same",
+            extras={"owner_user_id": "bob", "billing_mode": "byok"},
+        )
+        monkeypatch.setattr(lib, "PROJECT_ROOT", tmp_path)
+
+        alice_credits = CreditRepository(db_session, user_id="alice")
+        bob_credits = CreditRepository(db_session, user_id="bob")
+        await alice_credits.add_entry(amount=1000, kind="grant")
+        await bob_credits.add_entry(amount=1000, kind="grant")
+
+        repo = UsageRepository(db_session)
+        call_id = await repo.start_call(
+            project_name="same",
+            call_type="image",
+            model="gemini-3.1-flash-image-preview",
+            resolution="1K",
+            user_id="alice",
+        )
+        await repo.finish_call(call_id, status="success")
+
+        assert await alice_credits.get_balance() == 933
+        assert await bob_credits.get_balance() == 1000
+
+    async def test_platform_credits_actual_debit_is_idempotent(self, db_session, tmp_path, monkeypatch):
+        project_dir = tmp_path / "projects" / "demo"
+        project_dir.mkdir(parents=True)
+        (project_dir / "project.json").write_text('{"title":"Demo","billing_mode":"platform_credits"}')
+        monkeypatch.setattr(lib, "PROJECT_ROOT", tmp_path)
+
+        credit_repo = CreditRepository(db_session, user_id="user-a")
+        await credit_repo.add_entry(amount=1000, kind="grant")
+
+        repo = UsageRepository(db_session)
+        call_id = await repo.start_call(
+            project_name="demo",
+            call_type="image",
+            model="gemini-3.1-flash-image-preview",
+            resolution="1K",
+            user_id="user-a",
+        )
+        await repo.finish_call(call_id, status="success")
+        await repo.finish_call(call_id, status="success")
+
+        assert await credit_repo.get_balance() == 933
+
+    async def test_platform_credits_failed_call_does_not_debit(self, db_session, tmp_path, monkeypatch):
+        project_dir = tmp_path / "projects" / "demo"
+        project_dir.mkdir(parents=True)
+        (project_dir / "project.json").write_text('{"title":"Demo","billing_mode":"platform_credits"}')
+        monkeypatch.setattr(lib, "PROJECT_ROOT", tmp_path)
+
+        credit_repo = CreditRepository(db_session, user_id="user-a")
+        await credit_repo.add_entry(amount=1000, kind="grant")
+
+        repo = UsageRepository(db_session)
+        call_id = await repo.start_call(
+            project_name="demo",
+            call_type="image",
+            model="gemini-3.1-flash-image-preview",
+            resolution="1K",
+            user_id="user-a",
+        )
+        await repo.finish_call(call_id, status="failed", error_message="provider failed")
+
+        assert await credit_repo.get_balance() == 1000
 
 
 class TestMultiProviderUsage:

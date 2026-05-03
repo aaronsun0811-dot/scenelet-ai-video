@@ -16,7 +16,7 @@ import { CustomProviderForm } from "./settings/CustomProviderForm";
 // ---------------------------------------------------------------------------
 
 const STATUS_MAP: Record<string, { color: string; label: string }> = {
-  ready: { color: "bg-green-400", label: "status_ready" },
+  ready: { color: "bg-green-400", label: "status_configured" },
   error: { color: "bg-yellow-400", label: "status_error" },
   unconfigured: { color: "bg-gray-500", label: "status_unconfigured" },
 };

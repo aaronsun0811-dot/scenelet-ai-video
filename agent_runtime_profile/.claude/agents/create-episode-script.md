@@ -26,12 +26,15 @@ skills:
 ### Step 1: 确认前置条件
 
 使用 Read 工具读取 `projects/{项目名}/project.json`，确认：
+- content_type 字段（情景剧、短剧、小说改编、口播故事、广告剧情、知识小剧场）
 - content_mode 字段（narration 或 drama）
+- effective generation_mode（集级 `episodes[i].generation_mode` 优先，其次项目级 `generation_mode`，默认 storyboard）
 - characters、scenes、props 已有数据
 
 使用 Glob 工具确认中间文件存在：
-- narration 模式：`projects/{项目名}/drafts/episode_{N}/step1_segments.md`
-- drama 模式：`projects/{项目名}/drafts/episode_{N}/step1_normalized_script.md`
+- reference_video：`projects/{项目名}/drafts/episode_{N}/step1_reference_units.md`
+- narration：`projects/{项目名}/drafts/episode_{N}/step1_segments.md`
+- drama：`projects/{项目名}/drafts/episode_{N}/step1_normalized_script.md`
 
 如果中间文件不存在，报告错误并说明需要先运行哪个预处理 subagent。
 
@@ -52,6 +55,8 @@ python .claude/skills/generate-script/scripts/generate_script.py --episode {N}
 - 包含 episode、content_mode 字段
 - narration 模式：segments 数组不为空
 - drama 模式：scenes 数组不为空
+- reference_video 模式：video_units 数组不为空
+- metadata.content_type 与 project.json.content_type 一致（若项目设置了 content_type）
 
 ### Step 4: 返回摘要
 

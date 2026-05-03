@@ -21,8 +21,10 @@ from fastapi import Depends, HTTPException, Query
 from fastapi.security import OAuth2PasswordBearer
 from pwdlib import PasswordHash
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from lib import PROJECT_ROOT
+from lib.db import get_async_session
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +79,36 @@ def get_token_secret() -> str:
     return _cached_token_secret
 
 
-def create_token(username: str) -> str:
+def _env_truthy(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_bool_override(name: str) -> bool | None:
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def db_user_auth_enabled() -> bool:
+    """Whether DB-backed user accounts are enabled."""
+    if registration_enabled():
+        return True
+    explicit = _env_bool_override("AUTH_DB_USERS")
+    if explicit is not None:
+        return explicit
+    return True
+
+
+def registration_enabled() -> bool:
+    """Whether public account registration is enabled."""
+    return _env_truthy("AUTH_ALLOW_REGISTRATION", default=True)
+
+
+def create_token(username: str, *, user_id: str | None = None, role: str = "admin") -> str:
     """创建 JWT token
 
     Args:
@@ -91,7 +122,10 @@ def create_token(username: str) -> str:
         "sub": username,
         "iat": now,
         "exp": now + TOKEN_EXPIRY_SECONDS,
+        "role": role,
     }
+    if user_id:
+        payload["uid"] = user_id
     return jwt.encode(payload, get_token_secret(), algorithm="HS256")
 
 
@@ -114,7 +148,7 @@ def verify_token(token: str) -> dict | None:
 DOWNLOAD_TOKEN_EXPIRY_SECONDS = 300  # 5 分钟
 
 
-def create_download_token(username: str, project_name: str) -> str:
+def create_download_token(username: str, project_name: str, *, user_id: str | None = None) -> str:
     """签发短时效下载 token，用于浏览器原生下载认证"""
     now = time.time()
     payload = {
@@ -124,6 +158,8 @@ def create_download_token(username: str, project_name: str) -> str:
         "iat": now,
         "exp": now + DOWNLOAD_TOKEN_EXPIRY_SECONDS,
     }
+    if user_id:
+        payload["uid"] = user_id
     return jwt.encode(payload, get_token_secret(), algorithm="HS256")
 
 
@@ -166,6 +202,16 @@ def check_credentials(username: str, password: str) -> bool:
     username_ok = secrets.compare_digest(username, expected_username)
     password_ok = _password_hash.verify(password, pw_hash)
     return username_ok and password_ok
+
+
+def hash_password(password: str) -> str:
+    """Hash a user password for storage."""
+    return _password_hash.hash(password)
+
+
+def verify_password(password: str, password_hash: str) -> bool:
+    """Verify a password against a stored hash."""
+    return _password_hash.verify(password, password_hash)
 
 
 def ensure_auth_password(env_path: str | None = None) -> str:
@@ -323,7 +369,13 @@ async def _verify_api_key(token: str) -> dict | None:
         except (ValueError, TypeError):
             logger.warning("API Key expires_at 值格式无法解析，忽略过期检查: %r", expires_at)
 
-    payload = {"sub": f"apikey:{row['name']}", "via": "apikey"}
+    from lib.db.base import DEFAULT_USER_ID
+
+    payload = {
+        "sub": f"apikey:{row['name']}",
+        "via": "apikey",
+        "uid": row.get("user_id") or DEFAULT_USER_ID,
+    }
     _set_api_key_cache(key_hash, payload, expires_at_ts=expires_at_monotonic)
 
     # 异步更新 last_used_at（不阻塞，保存引用防止 GC）
@@ -355,7 +407,7 @@ def _verify_and_get_payload(token: str) -> dict:
     return payload
 
 
-async def _verify_and_get_payload_async(token: str) -> dict:
+async def _verify_and_get_payload_async(token: str, session: AsyncSession | None = None) -> dict:
     """异步验证 token，支持 API Key（arc- 前缀）和 JWT 两种模式。"""
     if token.startswith(API_KEY_PREFIX):
         payload = await _verify_api_key(token)
@@ -365,9 +417,43 @@ async def _verify_and_get_payload_async(token: str) -> dict:
                 detail="API Key 无效、已过期或不存在",
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        return payload
+        return await _ensure_payload_user_active(payload, session=session)
     # JWT 路径
-    return _verify_and_get_payload(token)
+    return await _ensure_payload_user_active(_verify_and_get_payload(token), session=session)
+
+
+async def _ensure_payload_user_active(payload: dict, session: AsyncSession | None = None) -> dict:
+    """Reject tokens owned by disabled DB users and refresh role from DB when possible."""
+    from lib.db.base import DEFAULT_USER_ID
+
+    user_id = str(payload.get("uid") or "")
+    if not user_id or user_id == DEFAULT_USER_ID:
+        return payload
+
+    try:
+        from lib.db.repositories.user_repository import UserRepository
+
+        if session is not None and hasattr(session, "execute"):
+            user = await UserRepository(session).get_by_id(user_id)
+        else:
+            from lib.db import async_session_factory
+
+            async with async_session_factory() as fallback_session:
+                user = await UserRepository(fallback_session).get_by_id(user_id)
+    except Exception:
+        logger.warning("无法检查 token 用户状态，继续使用 token 内信息", exc_info=True)
+        return payload
+
+    if user is None:
+        return payload
+    if not user.get("is_active"):
+        raise HTTPException(status_code=403, detail="user is disabled")
+
+    next_payload = dict(payload)
+    if next_payload.get("via") != "apikey":
+        next_payload["sub"] = user.get("username") or next_payload.get("sub", "")
+    next_payload["role"] = user.get("role") or next_payload.get("role", "user")
+    return next_payload
 
 
 def _payload_to_user(payload: dict) -> CurrentUserInfo:
@@ -375,20 +461,24 @@ def _payload_to_user(payload: dict) -> CurrentUserInfo:
     from lib.db.base import DEFAULT_USER_ID
 
     sub = payload.get("sub", "")
-    return CurrentUserInfo(id=DEFAULT_USER_ID, sub=sub, role="admin")
+    user_id = str(payload.get("uid") or DEFAULT_USER_ID)
+    role = str(payload.get("role") or "admin")
+    return CurrentUserInfo(id=user_id, sub=sub, role=role)
 
 
 async def get_current_user(
     token: Annotated[str, Depends(oauth2_scheme)],
+    session: Annotated[AsyncSession | None, Depends(get_async_session)] = None,
 ) -> CurrentUserInfo:
     """标准认证依赖 — 支持 JWT 和 API Key Bearer token。"""
-    payload = await _verify_and_get_payload_async(token)
+    payload = await _verify_and_get_payload_async(token, session=session)
     return _payload_to_user(payload)
 
 
 async def get_current_user_flexible(
     token: Annotated[str | None, Depends(oauth2_scheme_optional)] = None,
     query_token: str | None = Query(None, alias="token"),
+    session: Annotated[AsyncSession | None, Depends(get_async_session)] = None,
 ) -> CurrentUserInfo:
     """SSE 认证依赖 — 同时支持 Authorization header 和 ?token= query param。"""
     raw = token or query_token
@@ -398,7 +488,7 @@ async def get_current_user_flexible(
             detail="缺少认证 token",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    payload = await _verify_and_get_payload_async(raw)
+    payload = await _verify_and_get_payload_async(raw, session=session)
     return _payload_to_user(payload)
 
 

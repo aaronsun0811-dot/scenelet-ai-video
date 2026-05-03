@@ -14,8 +14,13 @@ interface Toast {
 }
 
 interface FocusedContext {
-  type: "character" | "scene" | "prop" | "segment";
+  type: WorkspaceFocusTarget["type"];
   id: string;
+}
+
+interface TaskHudFocusTarget {
+  request_id: string;
+  task_id: string;
 }
 
 const ALL_ENTITIES_REVISION_KEY = "__all__";
@@ -54,6 +59,11 @@ interface AppState {
   setAssistantPanelOpen: (open: boolean) => void;
   taskHudOpen: boolean;
   setTaskHudOpen: (open: boolean) => void;
+  taskHudFocusTarget: TaskHudFocusTarget | null;
+  triggerTaskHudFocus: (taskId: string) => void;
+  clearTaskHudFocusTarget: (requestId?: string) => void;
+  creditReconciliationRevision: number;
+  invalidateCreditReconciliation: () => void;
 
   // Source files invalidation signal
   sourceFilesVersion: number;
@@ -184,6 +194,28 @@ export const useAppStore = create<AppState>((set, get) => ({
   setAssistantPanelOpen: (open) => set({ assistantPanelOpen: open }),
   taskHudOpen: false,
   setTaskHudOpen: (open) => set({ taskHudOpen: open }),
+  taskHudFocusTarget: null,
+  triggerTaskHudFocus: (taskId) => {
+    const normalizedTaskId = taskId.trim();
+    if (!normalizedTaskId) return;
+    set({
+      taskHudOpen: true,
+      taskHudFocusTarget: {
+        request_id: `${Date.now()}-${Math.random()}`,
+        task_id: normalizedTaskId,
+      },
+    });
+  },
+  clearTaskHudFocusTarget: (requestId) =>
+    set((s) => {
+      if (!requestId || s.taskHudFocusTarget?.request_id === requestId) {
+        return { taskHudFocusTarget: null };
+      }
+      return s;
+    }),
+  creditReconciliationRevision: 0,
+  invalidateCreditReconciliation: () =>
+    set((s) => ({ creditReconciliationRevision: s.creditReconciliationRevision + 1 })),
 
   sourceFilesVersion: 0,
   invalidateSourceFiles: () => set((s) => ({ sourceFilesVersion: s.sourceFilesVersion + 1 })),

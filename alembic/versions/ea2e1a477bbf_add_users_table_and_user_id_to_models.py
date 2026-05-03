@@ -19,6 +19,26 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
+def _is_sqlite() -> bool:
+    return op.get_bind().dialect.name == "sqlite"
+
+
+def _drop_sqlite_tasks_dedupe_index() -> None:
+    if _is_sqlite():
+        op.execute(sa.text("DROP INDEX IF EXISTS idx_tasks_dedupe_active"))
+
+
+def _recreate_sqlite_tasks_dedupe_index() -> None:
+    if _is_sqlite():
+        op.execute(
+            sa.text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_dedupe_active "
+                "ON tasks(project_name, task_type, resource_id, COALESCE(script_file, '')) "
+                "WHERE status IN ('queued', 'running')"
+            )
+        )
+
+
 def upgrade() -> None:
     """Upgrade schema."""
     # 1. Create users table first (FK dependency)
@@ -55,11 +75,14 @@ def upgrade() -> None:
         )
     )
 
-    # 3. Add user_id to tasks
+    # 3. Add user_id to tasks. SQLite cannot reflect the expression-based
+    # partial index during batch rebuild, so recreate it explicitly.
+    _drop_sqlite_tasks_dedupe_index()
     with op.batch_alter_table("tasks", schema=None) as batch_op:
         batch_op.add_column(sa.Column("user_id", sa.String(), server_default="default", nullable=False))
         batch_op.create_foreign_key("fk_tasks_user_id", "users", ["user_id"], ["id"], ondelete="CASCADE")
         batch_op.create_index(batch_op.f("ix_tasks_user_id"), ["user_id"], unique=False)
+    _recreate_sqlite_tasks_dedupe_index()
 
     # 4. Fix api_calls: fill NULL created_at, add updated_at and user_id
     op.execute("UPDATE api_calls SET created_at = started_at WHERE created_at IS NULL")
@@ -116,8 +139,10 @@ def downgrade() -> None:
         batch_op.drop_column("user_id")
         batch_op.drop_column("updated_at")
 
+    _drop_sqlite_tasks_dedupe_index()
     with op.batch_alter_table("tasks", schema=None) as batch_op:
         batch_op.drop_index(batch_op.f("ix_tasks_user_id"))
         batch_op.drop_column("user_id")
+    _recreate_sqlite_tasks_dedupe_index()
 
     op.drop_table("users")

@@ -8,9 +8,14 @@ import os
 import time
 from unittest.mock import patch
 
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 import server.auth as auth_module
+from lib.db import get_async_session
+from lib.db.base import Base
+from server.routers import auth as auth_router
 
 
 class TestGeneratePassword:
@@ -65,6 +70,17 @@ class TestCreateAndVerifyToken:
             assert payload["sub"] == "admin"
             assert "iat" in payload
             assert "exp" in payload
+            assert payload["role"] == "admin"
+
+    def test_create_token_with_user_scope(self):
+        """数据库账号 token 携带用户隔离信息"""
+        with patch.dict(os.environ, {"AUTH_TOKEN_SECRET": "test-secret-key-that-is-at-least-32-bytes"}):
+            token = auth_module.create_token("alice", user_id="user_alice", role="user")
+            payload = auth_module.verify_token(token)
+            assert payload is not None
+            assert payload["sub"] == "alice"
+            assert payload["uid"] == "user_alice"
+            assert payload["role"] == "user"
 
     def test_verify_token_invalid(self):
         """无效 token 返回 None"""
@@ -308,3 +324,285 @@ class TestGetCurrentUser:
         with pytest.raises(HTTPException) as exc_info:
             await auth_module.get_current_user_flexible(None, None)
         assert exc_info.value.status_code == 401
+
+
+async def _auth_test_app():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    app = FastAPI()
+
+    async def _override_session():
+        async with factory() as session:
+            yield session
+
+    app.dependency_overrides[get_async_session] = _override_session
+    app.include_router(auth_router.router, prefix="/api/v1")
+    return app, engine
+
+
+class TestDbUserAuthRouter:
+    async def test_registration_enabled_by_default(self, monkeypatch):
+        monkeypatch.delenv("AUTH_ALLOW_REGISTRATION", raising=False)
+        monkeypatch.delenv("AUTH_DB_USERS", raising=False)
+        monkeypatch.setenv("AUTH_TOKEN_SECRET", "test-secret-key-that-is-at-least-32-bytes")
+        auth_module._cached_token_secret = None
+        app, engine = await _auth_test_app()
+        try:
+            with TestClient(app) as client:
+                caps = client.get("/api/v1/auth/capabilities")
+                register = client.post(
+                    "/api/v1/auth/register",
+                    json={"username": "alice", "password": "password123"},
+                )
+
+            assert caps.status_code == 200
+            assert caps.json() == {"db_users_enabled": True, "registration_enabled": True}
+            assert register.status_code == 200
+        finally:
+            await engine.dispose()
+
+    async def test_register_login_and_verify_db_user(self, monkeypatch):
+        monkeypatch.setenv("AUTH_ALLOW_REGISTRATION", "1")
+        monkeypatch.setenv("AUTH_TOKEN_SECRET", "test-secret-key-that-is-at-least-32-bytes")
+        monkeypatch.setenv("AUTH_PASSWORD", "env-admin-password")
+        auth_module._cached_token_secret = None
+        auth_module._cached_password_hash = None
+
+        app, engine = await _auth_test_app()
+        try:
+            with TestClient(app) as client:
+                created = client.post(
+                    "/api/v1/auth/register",
+                    json={"username": "alice", "password": "password123"},
+                )
+                duplicate = client.post(
+                    "/api/v1/auth/register",
+                    json={"username": "ALICE", "password": "password123"},
+                )
+                login = client.post(
+                    "/api/v1/auth/token",
+                    data={"username": "alice", "password": "password123"},
+                )
+                token = login.json()["access_token"]
+                verified = client.get(
+                    "/api/v1/auth/verify",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+
+            assert created.status_code == 200
+            assert duplicate.status_code == 409
+            assert login.status_code == 200
+            payload = auth_module.verify_token(token)
+            assert payload is not None
+            assert payload["sub"] == "alice"
+            assert payload["uid"].startswith("user_")
+            assert payload["role"] == "user"
+            assert verified.status_code == 200
+            assert verified.json()["username"] == "alice"
+            assert verified.json()["role"] == "user"
+            assert verified.json()["user_id"].startswith("user_")
+        finally:
+            await engine.dispose()
+
+    async def test_search_users_requires_auth_and_returns_matches(self, monkeypatch):
+        monkeypatch.setenv("AUTH_ALLOW_REGISTRATION", "1")
+        monkeypatch.setenv("AUTH_TOKEN_SECRET", "test-secret-key-that-is-at-least-32-bytes")
+        auth_module._cached_token_secret = None
+
+        app, engine = await _auth_test_app()
+        try:
+            with TestClient(app) as client:
+                alice = client.post(
+                    "/api/v1/auth/register",
+                    json={"username": "alice", "password": "password123"},
+                )
+                client.post(
+                    "/api/v1/auth/register",
+                    json={"username": "bob", "password": "password123"},
+                )
+                token = alice.json()["access_token"]
+                no_auth = client.get("/api/v1/auth/users/search?query=ali")
+                search = client.get(
+                    "/api/v1/auth/users/search?query=ali",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                user_list_for_user = client.get(
+                    "/api/v1/auth/users",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                admin_token = auth_module.create_token("admin", user_id="default", role="admin")
+                user_list_for_admin = client.get(
+                    "/api/v1/auth/users",
+                    headers={"Authorization": f"Bearer {admin_token}"},
+                )
+
+            assert no_auth.status_code == 401
+            assert search.status_code == 200
+            assert search.json()[0]["username"] == "alice"
+            assert search.json()[0]["id"].startswith("user_")
+            assert user_list_for_user.status_code == 403
+            assert user_list_for_admin.status_code == 200
+            assert {row["username"] for row in user_list_for_admin.json()} == {"alice", "bob"}
+        finally:
+            await engine.dispose()
+
+    async def test_admin_can_update_users_but_not_last_active_admin(self, monkeypatch):
+        monkeypatch.setenv("AUTH_ALLOW_REGISTRATION", "1")
+        monkeypatch.setenv("AUTH_TOKEN_SECRET", "test-secret-key-that-is-at-least-32-bytes")
+        auth_module._cached_token_secret = None
+
+        app, engine = await _auth_test_app()
+        try:
+            with TestClient(app) as client:
+                alice = client.post(
+                    "/api/v1/auth/register",
+                    json={"username": "alice", "password": "password123"},
+                ).json()
+                bob = client.post(
+                    "/api/v1/auth/register",
+                    json={"username": "bob", "password": "password123"},
+                ).json()
+                alice_payload = auth_module.verify_token(alice["access_token"])
+                bob_payload = auth_module.verify_token(bob["access_token"])
+                assert alice_payload is not None
+                assert bob_payload is not None
+                alice_id = alice_payload["uid"]
+                bob_id = bob_payload["uid"]
+                admin_token = auth_module.create_token("admin", user_id="default", role="admin")
+                headers = {"Authorization": f"Bearer {admin_token}"}
+
+                promote_alice = client.patch(
+                    f"/api/v1/auth/users/{alice_id}",
+                    json={"role": "admin"},
+                    headers=headers,
+                )
+                demote_last_admin = client.patch(
+                    f"/api/v1/auth/users/{alice_id}",
+                    json={"role": "user"},
+                    headers=headers,
+                )
+                promote_bob = client.patch(
+                    f"/api/v1/auth/users/{bob_id}",
+                    json={"role": "admin"},
+                    headers=headers,
+                )
+                deactivate_alice = client.patch(
+                    f"/api/v1/auth/users/{alice_id}",
+                    json={"is_active": False},
+                    headers=headers,
+                )
+
+            assert promote_alice.status_code == 200
+            assert promote_alice.json()["role"] == "admin"
+            assert demote_last_admin.status_code == 400
+            assert promote_bob.status_code == 200
+            assert promote_bob.json()["role"] == "admin"
+            assert deactivate_alice.status_code == 200
+            assert deactivate_alice.json()["is_active"] is False
+        finally:
+            await engine.dispose()
+
+    async def test_admin_can_create_user_without_public_registration(self, monkeypatch):
+        monkeypatch.setenv("AUTH_ALLOW_REGISTRATION", "0")
+        monkeypatch.delenv("AUTH_DB_USERS", raising=False)
+        monkeypatch.setenv("AUTH_TOKEN_SECRET", "test-secret-key-that-is-at-least-32-bytes")
+        auth_module._cached_token_secret = None
+
+        app, engine = await _auth_test_app()
+        try:
+            with TestClient(app) as client:
+                admin_token = auth_module.create_token("admin", user_id="default", role="admin")
+                user_token = auth_module.create_token("alice", user_id="user_alice", role="user")
+                create = client.post(
+                    "/api/v1/auth/users",
+                    json={"username": "carol", "password": "password123", "role": "admin"},
+                    headers={"Authorization": f"Bearer {admin_token}"},
+                )
+                duplicate = client.post(
+                    "/api/v1/auth/users",
+                    json={"username": "CAROL", "password": "password123", "role": "user"},
+                    headers={"Authorization": f"Bearer {admin_token}"},
+                )
+                forbidden = client.post(
+                    "/api/v1/auth/users",
+                    json={"username": "dave", "password": "password123"},
+                    headers={"Authorization": f"Bearer {user_token}"},
+                )
+                public_register = client.post(
+                    "/api/v1/auth/register",
+                    json={"username": "eve", "password": "password123"},
+                )
+                carol_login = client.post(
+                    "/api/v1/auth/token",
+                    data={"username": "carol", "password": "password123"},
+                )
+
+            assert create.status_code == 201
+            assert create.json()["username"] == "carol"
+            assert create.json()["role"] == "admin"
+            assert create.json()["is_active"] is True
+            assert duplicate.status_code == 409
+            assert forbidden.status_code == 403
+            assert public_register.status_code == 403
+            assert carol_login.status_code == 200
+        finally:
+            await engine.dispose()
+
+    async def test_admin_can_reset_user_password_and_deactivate_login(self, monkeypatch):
+        monkeypatch.setenv("AUTH_ALLOW_REGISTRATION", "0")
+        monkeypatch.delenv("AUTH_DB_USERS", raising=False)
+        monkeypatch.setenv("AUTH_TOKEN_SECRET", "test-secret-key-that-is-at-least-32-bytes")
+        auth_module._cached_token_secret = None
+
+        app, engine = await _auth_test_app()
+        try:
+            with TestClient(app) as client:
+                admin_token = auth_module.create_token("admin", user_id="default", role="admin")
+                headers = {"Authorization": f"Bearer {admin_token}"}
+                created = client.post(
+                    "/api/v1/auth/users",
+                    json={"username": "dora", "password": "password123", "role": "user"},
+                    headers=headers,
+                )
+                user_id = created.json()["id"]
+                reset = client.patch(
+                    f"/api/v1/auth/users/{user_id}",
+                    json={"password": "newpass123"},
+                    headers=headers,
+                )
+                old_login = client.post(
+                    "/api/v1/auth/token",
+                    data={"username": "dora", "password": "password123"},
+                )
+                new_login = client.post(
+                    "/api/v1/auth/token",
+                    data={"username": "dora", "password": "newpass123"},
+                )
+                active_token = new_login.json()["access_token"]
+                deactivate = client.patch(
+                    f"/api/v1/auth/users/{user_id}",
+                    json={"is_active": False},
+                    headers=headers,
+                )
+                disabled_login = client.post(
+                    "/api/v1/auth/token",
+                    data={"username": "dora", "password": "newpass123"},
+                )
+                disabled_verify = client.get(
+                    "/api/v1/auth/verify",
+                    headers={"Authorization": f"Bearer {active_token}"},
+                )
+
+            assert created.status_code == 201
+            assert reset.status_code == 200
+            assert old_login.status_code == 401
+            assert new_login.status_code == 200
+            assert deactivate.status_code == 200
+            assert disabled_login.status_code == 401
+            assert disabled_verify.status_code == 403
+            assert disabled_verify.json()["detail"] == "user is disabled"
+        finally:
+            await engine.dispose()

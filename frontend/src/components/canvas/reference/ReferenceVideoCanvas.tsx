@@ -2,19 +2,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/shallow";
 import { useTranslation } from "react-i18next";
-import { ArrowLeft, ChevronRight, Edit3, Loader2, Save, Sparkles, X as XIcon } from "lucide-react";
+import { AlertTriangle, ArrowLeft, CheckCircle2, ChevronRight, Clock3, Edit3, ImageIcon, Landmark, Loader2, MapPinned, Save, Sparkles, X as XIcon } from "lucide-react";
 import { UnitList } from "./UnitList";
 import { UnitPreviewPanel } from "./UnitPreviewPanel";
 import { ReferenceVideoCard, unitPromptText } from "./ReferenceVideoCard";
 import { ReferencePanel } from "./ReferencePanel";
+import { useGenerationPreflightGate } from "@/components/ui/GenerationPreflight";
 import { PreprocessingView } from "@/components/canvas/timeline/PreprocessingView";
 import { useReferenceVideoStore, referenceVideoCacheKey } from "@/stores/reference-video-store";
 import { useTasksStore } from "@/stores/tasks-store";
 import { useAppStore } from "@/stores/app-store";
 import { useProjectsStore } from "@/stores/projects-store";
+import { useScrollTarget } from "@/hooks/useScrollTarget";
+import { API } from "@/api";
 import { errMsg } from "@/utils/async";
 import { mergeReferences } from "@/utils/reference-mentions";
-import type { ReferenceResource, ReferenceVideoUnit, TaskStatus, UnitStatus } from "@/types";
+import type { ProjectData, ReferenceResource, ReferenceVideoUnit, TaskStatus, TravelRoutePreviewNode, TravelVideoSettings, UnitStatus, WorkspaceFocusTarget } from "@/types";
 
 export interface ReferenceVideoCanvasProps {
   projectName: string;
@@ -49,6 +52,361 @@ function draftKey(projectName: string, episode: number, unitId: string): string 
   return `${projectName}::${episode}::${unitId}`;
 }
 
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const text = value?.trim();
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    result.push(text);
+  }
+  return result;
+}
+
+function travelReferenceImages(settings: TravelVideoSettings | null | undefined): string[] {
+  return uniqueStrings([
+    ...(settings?.reference_images ?? []),
+    ...(settings?.route_preview?.reference_images ?? []),
+  ]);
+}
+
+function isLocalTravelReferencePath(path: string) {
+  const value = path.trim();
+  return Boolean(value) && !value.startsWith("/") && !/^[a-z][a-z0-9+.-]*:\/\//i.test(value);
+}
+
+function travelReferenceAssetName(path: string) {
+  const lastPart = path.trim().replace(/\\/g, "/").split("/").filter(Boolean).at(-1) ?? path;
+  return lastPart.replace(/\.[a-z0-9]+$/i, "") || lastPart;
+}
+
+function travelTargetSeconds(settings: TravelVideoSettings | null | undefined): number | null {
+  const target = settings?.target_duration ?? "45s";
+  if (target === "custom") {
+    const custom = settings?.custom_duration_seconds;
+    return typeof custom === "number" && Number.isFinite(custom) && custom > 0
+      ? Math.round(custom)
+      : null;
+  }
+  const parsed = Number.parseInt(target.replace("s", ""), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function normalizeMatchText(value: string | null | undefined): string {
+  return (value ?? "").toLowerCase().replace(/\s+/g, "");
+}
+
+function matchTravelRouteNodes(unit: ReferenceVideoUnit, nodes: TravelRoutePreviewNode[]): TravelRoutePreviewNode[] {
+  if (nodes.length === 0) return [];
+  const promptText = normalizeMatchText(unitPromptText(unit));
+  return nodes.filter((node) => {
+    const label = normalizeMatchText(node.label);
+    const instruction = normalizeMatchText(node.instruction);
+    return Boolean((label && promptText.includes(label)) || (instruction && promptText.includes(instruction)));
+  });
+}
+
+function travelReferenceSceneCoverage(project: ProjectData | null, references: string[]) {
+  const referenceSet = new Set(references);
+  const byPath = new Map<string, string[]>();
+  const scenes = project?.scenes ?? {};
+  Object.entries(scenes).forEach(([sceneName, scene]) => {
+    const source = scene.asset_source;
+    const sourceFile = source?.source_file?.trim();
+    if (source?.source_kind !== "travel_reference" || !sourceFile || !referenceSet.has(sourceFile)) return;
+    byPath.set(sourceFile, [...(byPath.get(sourceFile) ?? []), sceneName]);
+  });
+  const applied = references.filter((ref) => (byPath.get(ref)?.length ?? 0) > 0);
+  const missing = references.filter((ref) => !applied.includes(ref));
+  return { byPath, applied, missing };
+}
+
+function TravelReferenceDeliveryPanel({
+  projectName,
+  project,
+  units,
+}: {
+  projectName: string;
+  project: ProjectData | null;
+  units: ReferenceVideoUnit[];
+}) {
+  const { t } = useTranslation("dashboard");
+  const [applyingSceneAssets, setApplyingSceneAssets] = useState(false);
+  const [sceneAssetsFixMessage, setSceneAssetsFixMessage] = useState<string | null>(null);
+  if (project?.content_type !== "travel_video") return null;
+
+  const settings = project.travel_video_settings ?? null;
+  const routePreview = settings?.route_preview ?? null;
+  const routeNodes = routePreview?.nodes ?? [];
+  const references = travelReferenceImages(settings);
+  const localReferences = references.filter(isLocalTravelReferencePath);
+  const sceneCoverage = travelReferenceSceneCoverage(project, localReferences);
+  const targetSeconds = travelTargetSeconds(settings);
+  const totalSeconds = units.reduce((sum, unit) => sum + (unit.duration_seconds || 0), 0);
+  const durationTolerance = targetSeconds ? Math.max(8, Math.round(targetSeconds * 0.2)) : 0;
+  const durationDelta = targetSeconds ? totalSeconds - targetSeconds : 0;
+  const durationOk = targetSeconds === null || Math.abs(durationDelta) <= durationTolerance;
+  const routeReady = Boolean(routePreview?.route_ready);
+  const sceneAssetsOk = localReferences.length === 0 || sceneCoverage.missing.length === 0;
+  const routeNodeCoverage = units.filter((unit) => matchTravelRouteNodes(unit, routeNodes).length > 0).length;
+  const unitIssues = units.reduce((count, unit) => {
+    const matchedNodes = matchTravelRouteNodes(unit, routeNodes);
+    const missingRouteNode = routeNodes.length > 0 && matchedNodes.length === 0;
+    const missingReference = unit.references.length === 0 && references.length === 0;
+    return count + (missingRouteNode || missingReference || !unit.generated_assets.video_clip ? 1 : 0);
+  }, 0);
+  const issueCount = unitIssues + (routeReady ? 0 : 1) + (durationOk ? 0 : 1) + (sceneAssetsOk ? 0 : 1);
+  const overallReady = issueCount === 0;
+
+  const summaryItems = [
+    {
+      icon: MapPinned,
+      label: t("travel_delivery_route"),
+      value: routeReady
+        ? t("travel_delivery_route_ready", { count: routeNodes.length })
+        : t("travel_delivery_route_needs_check"),
+      ok: routeReady,
+    },
+    {
+      icon: ImageIcon,
+      label: t("travel_delivery_references"),
+      value: t("travel_delivery_reference_count", { count: references.length }),
+      ok: references.length > 0,
+    },
+    {
+      icon: Landmark,
+      label: t("travel_delivery_scene_assets"),
+      value: sceneAssetsOk
+        ? t("travel_delivery_scene_assets_ready", {
+          applied: sceneCoverage.applied.length,
+          total: localReferences.length,
+        })
+        : t("travel_delivery_scene_assets_missing", {
+          missing: sceneCoverage.missing.length,
+          total: localReferences.length,
+        }),
+      ok: sceneAssetsOk,
+    },
+    {
+      icon: Clock3,
+      label: t("travel_delivery_duration"),
+      value: targetSeconds
+        ? t("travel_delivery_duration_detail", { current: totalSeconds, target: targetSeconds })
+        : t("travel_delivery_duration_custom_missing", { current: totalSeconds }),
+      ok: durationOk,
+    },
+  ];
+
+  const handleApplyMissingSceneAssets = async () => {
+    const missing = sceneCoverage.missing.filter(isLocalTravelReferencePath);
+    if (missing.length === 0 || applyingSceneAssets) return;
+    setSceneAssetsFixMessage(null);
+    setApplyingSceneAssets(true);
+    try {
+      const assetResults = await Promise.allSettled(
+        missing.map((path) =>
+          API.addAssetFromProjectFile({
+            project_name: projectName,
+            file_path: path,
+            asset_type: "scene",
+            name: travelReferenceAssetName(path),
+            description: t("travel_route_asset_library_description", { path }),
+            conflict_policy: "rename",
+          }),
+        ),
+      );
+      const savedAssets = assetResults.flatMap((result) =>
+        result.status === "fulfilled" ? [result.value.asset] : []
+      );
+      const saveFailures = assetResults.length - savedAssets.length;
+      let appliedCount = 0;
+      let applyFailures = 0;
+      if (savedAssets.length > 0) {
+        const applyResult = await API.applyAssetsToProject({
+          asset_ids: savedAssets.map((asset) => asset.id),
+          target_project: projectName,
+          conflict_policy: "skip",
+        });
+        appliedCount = applyResult.succeeded.length + applyResult.skipped.length;
+        applyFailures = applyResult.failed.length;
+      }
+      const refreshed = await API.getProject(projectName);
+      useProjectsStore.getState().setCurrentProject(
+        projectName,
+        refreshed.project,
+        refreshed.scripts ?? {},
+        refreshed.asset_fingerprints,
+      );
+      const failures = saveFailures + applyFailures;
+      if (appliedCount > 0) {
+        useAppStore.getState().pushToast(
+          t("travel_delivery_scene_assets_apply_done", { count: appliedCount }),
+          failures > 0 ? "warning" : "success",
+        );
+        if (failures === 0) {
+          setSceneAssetsFixMessage(t("travel_delivery_scene_assets_fix_success"));
+        }
+      }
+      if (failures > 0) {
+        useAppStore.getState().pushNotification(
+          t("travel_delivery_scene_assets_apply_failed", { count: failures }),
+          "error",
+        );
+      }
+    } catch (err) {
+      useAppStore.getState().pushNotification(
+        t("travel_delivery_scene_assets_apply_error", { message: errMsg(err) }),
+        "error",
+      );
+    } finally {
+      setApplyingSceneAssets(false);
+    }
+  };
+
+  return (
+    <section className="mt-3 rounded-xl border border-cyan-400/20 bg-cyan-500/5 p-3">
+      <div className="flex flex-col gap-3 @3xl:flex-row @3xl:items-start @3xl:justify-between">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-cyan-400/10 text-cyan-200">
+              <MapPinned className="h-4 w-4" aria-hidden="true" />
+            </span>
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-gray-100">{t("travel_delivery_title")}</p>
+              <p className="mt-0.5 text-xs leading-5 text-gray-500">
+                {t("travel_delivery_desc")}
+              </p>
+            </div>
+          </div>
+        </div>
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          {!sceneAssetsOk && (
+            <button
+              type="button"
+              onClick={() => void handleApplyMissingSceneAssets()}
+              disabled={applyingSceneAssets}
+              className="inline-flex items-center gap-1.5 rounded-full border border-cyan-300/25 bg-cyan-400/10 px-2.5 py-1 text-xs font-medium text-cyan-100 transition-colors hover:border-cyan-300/50 hover:bg-cyan-400/15 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {applyingSceneAssets ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+              ) : (
+                <Landmark className="h-3.5 w-3.5" aria-hidden="true" />
+              )}
+              {applyingSceneAssets
+                ? t("travel_delivery_scene_assets_applying")
+                : t("travel_delivery_scene_assets_apply")}
+            </button>
+          )}
+          <span
+            className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium ${
+              overallReady
+                ? "border-emerald-300/25 bg-emerald-400/10 text-emerald-200"
+                : "border-amber-300/25 bg-amber-400/10 text-amber-100"
+            }`}
+          >
+            {overallReady ? <CheckCircle2 className="h-3.5 w-3.5" /> : <AlertTriangle className="h-3.5 w-3.5" />}
+            {overallReady ? t("travel_delivery_ready") : t("travel_delivery_needs_work", { count: issueCount })}
+          </span>
+        </div>
+      </div>
+
+      {sceneAssetsFixMessage && (
+        <div className="mt-3 rounded-lg border border-emerald-300/25 bg-emerald-400/10 px-3 py-2 text-xs leading-5 text-emerald-100">
+          {sceneAssetsFixMessage}
+        </div>
+      )}
+
+      <div className="mt-3 grid gap-2 @2xl:grid-cols-3">
+        {summaryItems.map((item) => {
+          const Icon = item.icon;
+          return (
+            <div key={item.label} className="rounded-lg border border-gray-800 bg-gray-950/45 px-3 py-2">
+              <div className="flex items-start gap-2">
+                <Icon className={`mt-0.5 h-3.5 w-3.5 ${item.ok ? "text-emerald-300" : "text-amber-200"}`} />
+                <div className="min-w-0">
+                  <p className="text-[11px] text-gray-500">{item.label}</p>
+                  <p className="mt-1 truncate text-xs font-medium text-gray-200">{item.value}</p>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {units.length > 0 && (
+        <div className="mt-3 max-h-44 space-y-2 overflow-y-auto pr-1">
+          {units.map((unit) => {
+            const matchedNodes = matchTravelRouteNodes(unit, routeNodes);
+            const missingRouteNode = routeNodes.length > 0 && matchedNodes.length === 0;
+            const missingReference = unit.references.length === 0 && references.length === 0;
+            const videoReady = Boolean(unit.generated_assets.video_clip);
+            const unitTravelScenes = unit.references
+              .filter((ref) => ref.type === "scene")
+              .map((ref) => ref.name)
+              .filter((name) => {
+                const source = project.scenes?.[name]?.asset_source;
+                return source?.source_kind === "travel_reference";
+              });
+            return (
+              <div key={unit.unit_id} className="rounded-lg border border-gray-800 bg-gray-950/45 px-3 py-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-mono text-xs text-gray-300" translate="no">{unit.unit_id}</span>
+                  <span className="rounded bg-gray-900 px-1.5 py-0.5 text-[11px] text-gray-500">
+                    {unit.duration_seconds}s
+                  </span>
+                  <span className={`rounded px-1.5 py-0.5 text-[11px] ${
+                    videoReady ? "bg-emerald-400/10 text-emerald-200" : "bg-amber-400/10 text-amber-100"
+                  }`}>
+                    {videoReady ? t("travel_delivery_unit_video_ready") : t("travel_delivery_unit_video_missing")}
+                  </span>
+                </div>
+                <div className="mt-2 grid gap-2 @2xl:grid-cols-3">
+                  <p className={`text-xs leading-5 ${missingRouteNode ? "text-amber-100" : "text-gray-400"}`}>
+                    {matchedNodes.length > 0
+                      ? t("travel_delivery_unit_nodes", {
+                        names: matchedNodes.map((node) => node.label).join(" / "),
+                      })
+                      : routeNodes.length > 0
+                        ? t("travel_delivery_unit_nodes_missing")
+                        : t("travel_delivery_unit_nodes_manual")}
+                  </p>
+                  <p className={`text-xs leading-5 ${missingReference ? "text-amber-100" : "text-gray-400"}`}>
+                    {unit.references.length > 0
+                      ? t("travel_delivery_unit_refs", {
+                        names: unit.references.map((ref) => `@${ref.name}`).join(" / "),
+                      })
+                      : references.length > 0
+                        ? t("travel_delivery_unit_global_refs", { count: references.length })
+                        : t("travel_delivery_unit_refs_missing")}
+                  </p>
+                  <p className={`text-xs leading-5 ${sceneAssetsOk ? "text-gray-400" : "text-amber-100"}`}>
+                    {unitTravelScenes.length > 0
+                      ? t("travel_delivery_unit_scene_assets", { names: unitTravelScenes.join(" / ") })
+                      : sceneCoverage.applied.length > 0
+                        ? t("travel_delivery_unit_scene_assets_global", {
+                          applied: sceneCoverage.applied.length,
+                          total: references.length,
+                        })
+                        : references.length > 0
+                          ? t("travel_delivery_unit_scene_assets_missing", { count: references.length })
+                          : t("travel_delivery_unit_scene_assets_none")}
+                  </p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {routeNodes.length > 0 && (
+        <p className="mt-2 text-[11px] leading-5 text-gray-500">
+          {t("travel_delivery_route_coverage", { covered: routeNodeCoverage, total: units.length })}
+        </p>
+      )}
+    </section>
+  );
+}
+
 /** Toast an error with tone="error". Optional `format` wraps the normalized
  *  message (e.g. an i18n template); without it the raw message is shown. */
 function toastError(e: unknown, format?: (msg: string) => string): void {
@@ -58,12 +416,21 @@ function toastError(e: unknown, format?: (msg: string) => string): void {
 
 export function ReferenceVideoCanvas({ projectName, episode, episodeTitle }: ReferenceVideoCanvasProps) {
   const { t } = useTranslation("dashboard");
+  const {
+    checkingGenerationPreflight,
+    generationPreflightDialog,
+    runWithGenerationPreflight,
+  } = useGenerationPreflightGate();
 
   const loadUnits = useReferenceVideoStore((s) => s.loadUnits);
   const addUnit = useReferenceVideoStore((s) => s.addUnit);
   const patchUnit = useReferenceVideoStore((s) => s.patchUnit);
   const generate = useReferenceVideoStore((s) => s.generate);
   const select = useReferenceVideoStore((s) => s.select);
+  const handleReferenceUnitResolved = useCallback((target: WorkspaceFocusTarget) => {
+    select(target.id);
+  }, [select]);
+  useScrollTarget("reference-unit", { onResolved: handleReferenceUnitResolved });
 
   const units =
     useReferenceVideoStore((s) => s.unitsByEpisode[referenceVideoCacheKey(projectName, episode)]) ??
@@ -77,6 +444,7 @@ export function ReferenceVideoCanvas({ projectName, episode, episodeTitle }: Ref
   // 切换 unit 不清空，便于用户在多个 unit 间来回编辑而不丢失输入。
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
+  const [batchGenerating, setBatchGenerating] = useState(false);
 
   const relevantTasks = useTasksStore(
     useShallow((s) =>
@@ -112,6 +480,26 @@ export function ReferenceVideoCanvas({ projectName, episode, episodeTitle }: Ref
   // false，遗留项会重新激活，按钮卡在 busy 直到切换 unit 或刷新。对单会话
   // 典型规模（十到数百 unit）可接受；相比显式 pruning，派生逻辑更简单。
   const [optimisticUnitIds, setOptimisticUnitIds] = useState<Set<string>>(() => new Set());
+  const isPlatformCreditsProject = project?.billing_mode === "platform_credits";
+  const ensureGenerationCredits = useCallback(async () => {
+    if (!isPlatformCreditsProject) return true;
+    try {
+      const credits = await API.getCreditBalance();
+      const availableBalance = credits.available_balance ?? credits.balance;
+      if (availableBalance >= credits.minimum_generation_balance) return true;
+      useAppStore.getState().pushToast(
+        t("platform_credits_preflight_low_balance", {
+          balance: availableBalance.toLocaleString(),
+          minimum: credits.minimum_generation_balance.toLocaleString(),
+        }),
+        "error",
+      );
+      return false;
+    } catch {
+      // If the preflight check cannot run, let the generation endpoint enforce billing.
+      return true;
+    }
+  }, [isPlatformCreditsProject, t]);
 
   // #370 任务失败 toast：转变驱动（transition detection），不是状态驱动。
   //
@@ -154,9 +542,26 @@ export function ReferenceVideoCanvas({ projectName, episode, episodeTitle }: Ref
     return relevantTasks.some(
       (tk) =>
         tk.resource_id === selected.unit_id &&
-        (tk.status === "queued" || tk.status === "running"),
+      (tk.status === "queued" || tk.status === "running"),
     );
   }, [relevantTasks, selected, optimisticUnitIds]);
+  const busyUnitIds = useMemo(
+    () =>
+      new Set(
+        relevantTasks
+          .filter((tk) => tk.status === "queued" || tk.status === "running")
+          .map((tk) => tk.resource_id),
+      ),
+    [relevantTasks],
+  );
+  const rawMissingVideoUnits = useMemo(
+    () => units.filter((unit) => !unit.generated_assets.video_clip),
+    [units],
+  );
+  const missingVideoUnits = useMemo(
+    () => rawMissingVideoUnits.filter((unit) => !busyUnitIds.has(unit.unit_id)),
+    [rawMissingVideoUnits, busyUnitIds],
+  );
 
   const handleAdd = useCallback(async () => {
     try {
@@ -170,38 +575,139 @@ export function ReferenceVideoCanvas({ projectName, episode, episodeTitle }: Ref
   const [smallTab, setSmallTab] = useState<"editor" | "preview">("editor");
 
   const handleGenerate = useCallback(
-    async (unitId: string) => {
-      setOptimisticUnitIds((s) => {
-        if (s.has(unitId)) return s;
-        const next = new Set(s);
-        next.add(unitId);
-        return next;
-      });
-      // 小屏模式下自动切到视频 Tab，让用户看到任务进入排队态；@4xl+ 下此 state 被 CSS 忽略。
-      setSmallTab("preview");
-      try {
-        const { deduped } = await generate(projectName, episode, unitId);
-        useAppStore
-          .getState()
-          .pushToast(
-            t(deduped ? "reference_generate_deduped" : "reference_generate_queued"),
-            "info",
-          );
-      } catch (e) {
+    (unitId: string) => {
+      const unit = units.find((item) => item.unit_id === unitId);
+      void runWithGenerationPreflight(
+        {
+          projectName,
+          taskType: "reference_video",
+          resourceId: unitId,
+          targetLabel: unitId,
+          payload: { duration_seconds: unit?.duration_seconds },
+        },
+        async () => {
+          if (!(await ensureGenerationCredits())) return;
+          setOptimisticUnitIds((s) => {
+            if (s.has(unitId)) return s;
+            const next = new Set(s);
+            next.add(unitId);
+            return next;
+          });
+          // 小屏模式下自动切到视频 Tab，让用户看到任务进入排队态；@4xl+ 下此 state 被 CSS 忽略。
+          setSmallTab("preview");
+          try {
+            const { deduped } = await generate(projectName, episode, unitId);
+            useAppStore
+              .getState()
+              .pushToast(
+                t(deduped ? "reference_generate_deduped" : "reference_generate_queued"),
+                "info",
+              );
+          } catch (e) {
+            setOptimisticUnitIds((s) => {
+              if (!s.has(unitId)) return s;
+              const next = new Set(s);
+              next.delete(unitId);
+              return next;
+            });
+            toastError(e, (msg) => t("reference_generate_request_failed", { error: msg }));
+          }
+        },
+      );
+    },
+    [ensureGenerationCredits, episode, generate, projectName, runWithGenerationPreflight, t, units],
+  );
+
+  const handleGenerateMissing = useCallback(() => {
+    if (batchGenerating) return;
+    if (missingVideoUnits.length === 0) {
+      useAppStore
+        .getState()
+        .pushToast(
+          t(
+            rawMissingVideoUnits.length > 0
+              ? "reference_generate_batch_already_active"
+              : "reference_generate_batch_no_missing",
+          ),
+          "warning",
+        );
+      return;
+    }
+    const unitIds = missingVideoUnits.map((unit) => unit.unit_id);
+    const maxDuration = missingVideoUnits.reduce(
+      (max, unit) => Math.max(max, unit.duration_seconds ?? 0),
+      0,
+    );
+    void runWithGenerationPreflight(
+      {
+        projectName,
+        taskType: "reference_video",
+        resourceId: `episode-${episode}-reference-videos`,
+        targetLabel: t("reference_generate_batch_button", { count: missingVideoUnits.length }),
+        payload: maxDuration > 0 ? { duration_seconds: maxDuration } : {},
+        count: missingVideoUnits.length,
+      },
+      async () => {
+        if (!(await ensureGenerationCredits())) return;
+        setBatchGenerating(true);
+        setSmallTab("preview");
         setOptimisticUnitIds((s) => {
-          if (!s.has(unitId)) return s;
           const next = new Set(s);
-          next.delete(unitId);
+          for (const unitId of unitIds) next.add(unitId);
           return next;
         });
-        toastError(e, (msg) => t("reference_generate_request_failed", { error: msg }));
-      }
-    },
-    [generate, projectName, episode, t],
-  );
+        try {
+          const results = await Promise.allSettled(
+            unitIds.map((unitId) => generate(projectName, episode, unitId)),
+          );
+          const submitted = results.filter((result) => result.status === "fulfilled").length;
+          const failed = results.length - submitted;
+          if (submitted > 0) {
+            useAppStore
+              .getState()
+              .pushToast(t("reference_generate_batch_submitted", { count: submitted }), "info");
+          }
+          if (failed > 0) {
+            const firstFailure = results.find((result) => result.status === "rejected");
+            const reason: unknown =
+              firstFailure?.status === "rejected" ? (firstFailure.reason as unknown) : undefined;
+            useAppStore
+              .getState()
+              .pushNotification(
+                t("reference_generate_batch_failed", { count: failed, error: errMsg(reason) }),
+                "error",
+              );
+            const failedUnitIds = new Set(
+              results
+                .map((result, index) => (result.status === "rejected" ? unitIds[index] : null))
+                .filter((unitId): unitId is string => Boolean(unitId)),
+            );
+            setOptimisticUnitIds((s) => {
+              const next = new Set(s);
+              for (const unitId of failedUnitIds) next.delete(unitId);
+              return next;
+            });
+          }
+        } finally {
+          setBatchGenerating(false);
+        }
+      },
+    );
+  }, [
+    batchGenerating,
+    ensureGenerationCredits,
+    episode,
+    generate,
+    missingVideoUnits,
+    projectName,
+    rawMissingVideoUnits.length,
+    runWithGenerationPreflight,
+    t,
+  ]);
 
   const onAdd = useCallback(() => void handleAdd(), [handleAdd]);
   const onGenerateVoid = useCallback((id: string) => void handleGenerate(id), [handleGenerate]);
+  const onGenerateMissingVoid = useCallback(() => void handleGenerateMissing(), [handleGenerateMissing]);
 
   // Draft 管理：每次输入只更新本地 drafts，不触发网络请求。草稿与服务端值一致时
   // 自动清除该条目，避免"回退到原值后仍显示未保存"的误判。
@@ -469,6 +975,7 @@ export function ReferenceVideoCanvas({ projectName, episode, episodeTitle }: Ref
   }
 
   return (
+    <>
     <div className="@container flex h-full flex-col">
       <div className="px-4 py-3">
         <h2 className="text-lg font-semibold text-gray-100">
@@ -499,6 +1006,7 @@ export function ReferenceVideoCanvas({ projectName, episode, episodeTitle }: Ref
             {error}
           </p>
         )}
+          <TravelReferenceDeliveryPanel projectName={projectName} project={project} units={units} />
       </div>
       {/* 外层 grid：<@md(448px) 单列；@md+ 双栏 (UnitList | 右侧 wrapper)。
           断点选 @md 是因为 agent chat 占右半屏时中栏常在 500-700px 区间，@2xl(672px) 错过太多场景。
@@ -583,11 +1091,38 @@ export function ReferenceVideoCanvas({ projectName, episode, episodeTitle }: Ref
                   {saving ? t("common:saving") : t("common:save")}
                 </button>
               )}
+              {units.length > 0 && (
+                <button
+                  type="button"
+                  onClick={onGenerateMissingVoid}
+                  disabled={batchGenerating || checkingGenerationPreflight || rawMissingVideoUnits.length === 0}
+                  className={`focus-ring inline-flex items-center justify-center gap-1.5 rounded-md border px-3 py-1 text-xs font-medium transition-colors ${
+                    batchGenerating
+                      ? "border-emerald-700 text-emerald-400 opacity-70 cursor-not-allowed"
+                      : rawMissingVideoUnits.length === 0
+                        ? "cursor-not-allowed border-gray-800 text-gray-600"
+                        : "border-emerald-600 text-emerald-400 hover:bg-emerald-600/10"
+                  }`}
+                >
+                  {batchGenerating ? (
+                    <Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" />
+                  ) : (
+                    <Sparkles aria-hidden="true" className="h-3.5 w-3.5" />
+                  )}
+                  {batchGenerating
+                    ? t("reference_generate_batch_running")
+                    : rawMissingVideoUnits.length === 0
+                      ? t("reference_generate_batch_complete")
+                      : missingVideoUnits.length === 0
+                        ? t("reference_generate_batch_active_button")
+                        : t("reference_generate_batch_button", { count: missingVideoUnits.length })}
+                </button>
+              )}
               {selected && (
                 <button
                   type="button"
                   onClick={() => onGenerateVoid(selected.unit_id)}
-                  disabled={generating}
+                  disabled={generating || checkingGenerationPreflight}
                   className={`focus-ring inline-flex items-center justify-center gap-1.5 rounded-md border px-3 py-1 text-xs font-medium transition-colors ${
                     generating
                       ? "border-blue-700 text-blue-400 opacity-70 cursor-not-allowed"
@@ -649,5 +1184,7 @@ export function ReferenceVideoCanvas({ projectName, episode, episodeTitle }: Ref
         </div>
       </div>
     </div>
+    {generationPreflightDialog}
+    </>
   );
 }

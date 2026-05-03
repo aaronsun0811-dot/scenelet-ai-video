@@ -93,11 +93,13 @@ async def meta_store():
 @pytest.fixture()
 async def session_manager(tmp_path: Path, meta_store: SessionMetaStore) -> SessionManager:
     """Create a SessionManager wired to *tmp_path* and *meta_store*."""
-    return SessionManager(
+    manager = SessionManager(
         project_root=tmp_path,
         data_dir=tmp_path,
         meta_store=meta_store,
     )
+    yield manager
+    await manager.shutdown_gracefully(timeout=1.0)
 
 
 # ---------------------------------------------------------------------------

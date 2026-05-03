@@ -1,5 +1,10 @@
 """文本生成服务层公共 API。"""
 
+from __future__ import annotations
+
+from importlib import import_module
+from typing import Any
+
 from lib.text_backends.base import (
     ImageInput,
     TextBackend,
@@ -22,23 +27,35 @@ __all__ = [
     "register_backend",
 ]
 
-# Backend auto-registration
-from lib.providers import PROVIDER_GEMINI
-from lib.text_backends.gemini import GeminiTextBackend
+from lib.providers import PROVIDER_ARK, PROVIDER_GEMINI, PROVIDER_GROK, PROVIDER_OPENAI
 
-register_backend(PROVIDER_GEMINI, GeminiTextBackend)
+_BACKEND_EXPORTS = {
+    "GeminiTextBackend": ("lib.text_backends.gemini", "GeminiTextBackend"),
+    "ArkTextBackend": ("lib.text_backends.ark", "ArkTextBackend"),
+    "GrokTextBackend": ("lib.text_backends.grok", "GrokTextBackend"),
+    "OpenAITextBackend": ("lib.text_backends.openai", "OpenAITextBackend"),
+}
 
-from lib.providers import PROVIDER_ARK
-from lib.text_backends.ark import ArkTextBackend
 
-register_backend(PROVIDER_ARK, ArkTextBackend)
+def _lazy_backend_factory(module_name: str, class_name: str):
+    def _factory(**kwargs: Any) -> TextBackend:
+        backend_cls = getattr(import_module(module_name), class_name)
+        return backend_cls(**kwargs)
 
-from lib.providers import PROVIDER_GROK
-from lib.text_backends.grok import GrokTextBackend
+    return _factory
 
-register_backend(PROVIDER_GROK, GrokTextBackend)
 
-from lib.providers import PROVIDER_OPENAI
-from lib.text_backends.openai import OpenAITextBackend
+def __getattr__(name: str):
+    if name not in _BACKEND_EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module_name, class_name = _BACKEND_EXPORTS[name]
+    attr = getattr(import_module(module_name), class_name)
+    globals()[name] = attr
+    return attr
 
-register_backend(PROVIDER_OPENAI, OpenAITextBackend)
+
+# Backend auto-registration without importing provider SDKs at package import time.
+register_backend(PROVIDER_GEMINI, _lazy_backend_factory("lib.text_backends.gemini", "GeminiTextBackend"))
+register_backend(PROVIDER_ARK, _lazy_backend_factory("lib.text_backends.ark", "ArkTextBackend"))
+register_backend(PROVIDER_GROK, _lazy_backend_factory("lib.text_backends.grok", "GrokTextBackend"))
+register_backend(PROVIDER_OPENAI, _lazy_backend_factory("lib.text_backends.openai", "OpenAITextBackend"))

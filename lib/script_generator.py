@@ -15,7 +15,10 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from lib.config.registry import PROVIDER_REGISTRY
 from lib.config.resolver import ConfigResolver
+from lib.content_workflows import format_workflow_context, get_workflow_preset
 from lib.db import async_session_factory
+from lib.db.base import DEFAULT_USER_ID, PLATFORM_USER_ID
+from lib.default_duration import normalize_project_default_duration
 from lib.project_manager import effective_mode
 from lib.prompt_builders_reference import build_reference_video_prompt
 from lib.prompt_builders_script import (
@@ -49,7 +52,13 @@ class ScriptGenerator:
     读取 Step 1/2 的 Markdown 中间文件，调用 TextBackend 生成最终 JSON 剧本
     """
 
-    def __init__(self, project_path: str | Path, generator: Optional["TextGenerator"] = None):
+    def __init__(
+        self,
+        project_path: str | Path,
+        generator: Optional["TextGenerator"] = None,
+        *,
+        user_id: str = DEFAULT_USER_ID,
+    ):
         """
         初始化生成器
 
@@ -59,10 +68,19 @@ class ScriptGenerator:
         """
         self.project_path = Path(project_path)
         self.generator = generator
+        self.user_id = user_id
 
         # 加载 project.json
         self.project_json = self._load_project_json()
         self.content_mode = self.project_json.get("content_mode", "narration")
+
+    def _workflow_script_context(self) -> str:
+        preset = get_workflow_preset(self.project_json.get("content_type"))
+        return format_workflow_context(
+            preset,
+            phase="script",
+            travel_video_settings=self.project_json.get("travel_video_settings"),
+        )
 
     def _effective_generation_mode(self, episode: int) -> str:
         """按 Spec §4.6 解析集级 → 项目级 generation_mode，未知值回退 storyboard。"""
@@ -73,11 +91,11 @@ class ScriptGenerator:
         return effective_mode(project=self.project_json, episode=episode_dict)
 
     @classmethod
-    async def create(cls, project_path: str | Path) -> "ScriptGenerator":
+    async def create(cls, project_path: str | Path, *, user_id: str = DEFAULT_USER_ID) -> "ScriptGenerator":
         """异步工厂方法，自动从 DB 加载供应商配置创建 TextGenerator。"""
         project_name = Path(project_path).name
-        generator = await TextGenerator.create(TextTaskType.SCRIPT, project_name)
-        return cls(project_path, generator)
+        generator = await TextGenerator.create(TextTaskType.SCRIPT, project_name, user_id=user_id)
+        return cls(project_path, generator, user_id=user_id)
 
     async def generate(
         self,
@@ -105,6 +123,7 @@ class ScriptGenerator:
         characters = self.project_json.get("characters", {})
         scenes = self.project_json.get("scenes", {})
         props = self.project_json.get("props", {})
+        workflow_instructions = self._workflow_script_context()
 
         if gen_mode == "reference_video":
             prompt = build_reference_video_prompt(
@@ -119,6 +138,7 @@ class ScriptGenerator:
                 max_refs=self._resolve_max_refs(caps),
                 max_duration=self._resolve_max_duration(caps),
                 aspect_ratio=self._resolve_aspect_ratio(),
+                workflow_instructions=workflow_instructions,
             )
             schema = ReferenceVideoScript
         elif self.content_mode == "narration":
@@ -131,8 +151,9 @@ class ScriptGenerator:
                 props=props,
                 segments_md=step1_md,
                 supported_durations=self._resolve_supported_durations(caps),
-                default_duration=self.project_json.get("default_duration"),
+                default_duration=normalize_project_default_duration(self.project_json),
                 aspect_ratio=self._resolve_aspect_ratio(),
+                workflow_instructions=workflow_instructions,
             )
             schema = NarrationEpisodeScript
         else:
@@ -145,8 +166,9 @@ class ScriptGenerator:
                 props=props,
                 scenes_md=step1_md,
                 supported_durations=self._resolve_supported_durations(caps),
-                default_duration=self.project_json.get("default_duration"),
+                default_duration=normalize_project_default_duration(self.project_json),
                 aspect_ratio=self._resolve_aspect_ratio(),
+                workflow_instructions=workflow_instructions,
             )
             schema = DramaEpisodeScript
 
@@ -195,6 +217,7 @@ class ScriptGenerator:
         characters = self.project_json.get("characters", {})
         scenes = self.project_json.get("scenes", {})
         props = self.project_json.get("props", {})
+        workflow_instructions = self._workflow_script_context()
 
         if gen_mode == "reference_video":
             return build_reference_video_prompt(
@@ -209,6 +232,7 @@ class ScriptGenerator:
                 max_refs=self._resolve_max_refs(None),
                 max_duration=self._resolve_max_duration(None),
                 aspect_ratio=self._resolve_aspect_ratio(),
+                workflow_instructions=workflow_instructions,
             )
         elif self.content_mode == "narration":
             return build_narration_prompt(
@@ -220,8 +244,9 @@ class ScriptGenerator:
                 props=props,
                 segments_md=step1_md,
                 supported_durations=self._resolve_supported_durations(None),
-                default_duration=self.project_json.get("default_duration"),
+                default_duration=normalize_project_default_duration(self.project_json),
                 aspect_ratio=self._resolve_aspect_ratio(),
+                workflow_instructions=workflow_instructions,
             )
         else:
             return build_drama_prompt(
@@ -233,8 +258,9 @@ class ScriptGenerator:
                 props=props,
                 scenes_md=step1_md,
                 supported_durations=self._resolve_supported_durations(None),
-                default_duration=self.project_json.get("default_duration"),
+                default_duration=normalize_project_default_duration(self.project_json),
                 aspect_ratio=self._resolve_aspect_ratio(),
+                workflow_instructions=workflow_instructions,
             )
 
     async def _fetch_video_capabilities(self) -> dict | None:
@@ -247,7 +273,8 @@ class ScriptGenerator:
         宽松捕获：除 ValueError 外，DB 未 migration / 连接失败等 SQLAlchemy 异常也走 fallback，
         保证在缺能力元数据的环境（如裸 CI 测试容器）中 generate() 仍能跑通。
         """
-        resolver = ConfigResolver(async_session_factory)
+        credential_user_id = PLATFORM_USER_ID if self.project_json.get("billing_mode") == "platform_credits" else self.user_id
+        resolver = ConfigResolver(async_session_factory, user_id=credential_user_id)
         try:
             return await resolver.video_capabilities_for_project(self.project_json)
         except (ValueError, SQLAlchemyError) as exc:
@@ -408,6 +435,8 @@ class ScriptGenerator:
         script_data["metadata"]["created_at"] = now
         script_data["metadata"]["updated_at"] = now
         script_data["metadata"]["generator"] = self.generator.model if self.generator else "unknown"
+        if self.project_json.get("content_type"):
+            script_data["metadata"]["content_type"] = self.project_json["content_type"]
 
         # 计算统计信息（episode 级角色/场景/道具聚合由 StatusCalculator 读时计算）
         if gen_mode == "reference_video":

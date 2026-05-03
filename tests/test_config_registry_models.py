@@ -53,18 +53,45 @@ class TestProviderMeta:
 
 class TestProviderRegistry:
     def test_all_providers_have_text_models(self):
-        for provider_id, meta in PROVIDER_REGISTRY.items():
+        for provider_id in (
+            "gemini-aistudio",
+            "gemini-vertex",
+            "ark",
+            "grok",
+            "openai",
+            "baidu",
+            "qwen",
+            "zhipu",
+            "deepseek",
+            "moonshot",
+            "minimax",
+            "hunyuan",
+            "anthropic",
+        ):
+            meta = PROVIDER_REGISTRY[provider_id]
             text_models = [mid for mid, m in meta.models.items() if m.media_type == "text"]
             assert len(text_models) > 0, f"{provider_id} has no text models"
 
     def test_all_providers_have_image_models(self):
-        for provider_id in ("gemini-aistudio", "gemini-vertex", "ark", "grok"):
+        for provider_id in ("gemini-aistudio", "gemini-vertex", "ark", "grok", "openai", "midjourney", "jimeng"):
             meta = PROVIDER_REGISTRY[provider_id]
             image_models = [mid for mid, m in meta.models.items() if m.media_type == "image"]
             assert len(image_models) > 0, f"{provider_id} has no image models"
 
     def test_all_providers_have_video_models(self):
-        for provider_id in ("gemini-aistudio", "gemini-vertex", "ark", "grok"):
+        for provider_id in (
+            "gemini-aistudio",
+            "gemini-vertex",
+            "ark",
+            "grok",
+            "openai",
+            "minimax",
+            "luma",
+            "pika",
+            "runway",
+            "kling",
+            "jimeng",
+        ):
             meta = PROVIDER_REGISTRY[provider_id]
             video_models = [mid for mid, m in meta.models.items() if m.media_type == "video"]
             assert len(video_models) > 0, f"{provider_id} has no video models"
@@ -79,7 +106,23 @@ class TestProviderRegistry:
                 assert len(defaults) == 1, f"{provider_id} has {len(defaults)} default {mt} models, expected 1"
 
     def test_media_types_property_includes_text(self):
-        for provider_id, meta in PROVIDER_REGISTRY.items():
+        text_provider_ids = {
+            "gemini-aistudio",
+            "gemini-vertex",
+            "ark",
+            "grok",
+            "openai",
+            "baidu",
+            "qwen",
+            "zhipu",
+            "deepseek",
+            "moonshot",
+            "minimax",
+            "hunyuan",
+            "anthropic",
+        }
+        for provider_id in text_provider_ids:
+            meta = PROVIDER_REGISTRY[provider_id]
             assert "text" in meta.media_types, f"{provider_id} missing 'text'"
 
     def test_ark_video_models_include_seedance_2(self):

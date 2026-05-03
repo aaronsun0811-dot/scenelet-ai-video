@@ -56,6 +56,7 @@ def _write_project_json(proj_dir: Path, video_backend: str, default_duration: in
     payload: dict = {
         "title": proj_dir.name,
         "video_backend": video_backend,
+        "content_type": "ad_story",
         "content_mode": "narration",
         "generation_mode": "reference_video",
     }
@@ -75,6 +76,7 @@ def test_script_reports_grok_capabilities(unique_project) -> None:
     assert data["max_duration"] == 15
     assert data["supported_durations"] == list(range(1, 16))
     assert data["default_duration"] == 5
+    assert data["content_type"] == "ad_story"
     assert data["source"] == "registry"
 
 
@@ -87,7 +89,7 @@ def test_script_reports_veo_capabilities(unique_project) -> None:
     assert data["provider_id"] == "gemini-aistudio"
     assert data["max_duration"] == 8
     assert data["supported_durations"] == [4, 6, 8]
-    assert data["default_duration"] is None
+    assert data["default_duration"] == 8
 
 
 def test_script_missing_project_exits_nonzero() -> None:

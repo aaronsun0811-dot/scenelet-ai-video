@@ -60,6 +60,11 @@ function getSegmentId(segment: Segment, mode: "narration" | "drama"): string {
     : (segment as DramaScene).scene_id;
 }
 
+function getSegmentGenerationPrompt(segment: Segment, field: "image_prompt" | "video_prompt"): unknown {
+  const value = (segment as unknown as Record<string, unknown>)[field];
+  return value ?? "";
+}
+
 function getSegmentField(
   segment: Segment,
   mode: "narration" | "drama",
@@ -164,6 +169,7 @@ interface SegmentCardProps {
   scenes: Record<string, Scene>;
   props: Record<string, Prop>;
   projectName: string;
+  scriptFile?: string;
   durationOptions?: number[];
   /** When true, hides the per-scene "生成分镜" button (grid mode manages storyboards). */
   isGridMode?: boolean;
@@ -568,6 +574,7 @@ function MediaColumn({
   segment,
   aspectRatio,
   projectName,
+  scriptFile,
   segmentId,
   isGridMode,
   onGenerateStoryboard,
@@ -580,6 +587,7 @@ function MediaColumn({
   segment: Segment;
   aspectRatio: string;
   projectName: string;
+  scriptFile?: string;
   segmentId: string;
   isGridMode?: boolean;
   onGenerateStoryboard?: (segmentId: string) => void;
@@ -656,6 +664,16 @@ function MediaColumn({
               loading={generatingStoryboard}
               label={t("generate_storyboard")}
               className="w-full justify-center"
+              preflight={scriptFile ? {
+                projectName,
+                taskType: "storyboard",
+                resourceId: segmentId,
+                targetLabel: segmentId,
+                payload: {
+                  prompt: getSegmentGenerationPrompt(segment, "image_prompt"),
+                  script_file: scriptFile,
+                },
+              } : undefined}
             />
           </div>
         )}
@@ -693,6 +711,17 @@ function MediaColumn({
             label={t("generate_video_btn")}
             className="w-full justify-center"
             disabled={!assets?.storyboard_image}
+            preflight={scriptFile ? {
+              projectName,
+              taskType: "video",
+              resourceId: segmentId,
+              targetLabel: segmentId,
+              payload: {
+                prompt: getSegmentGenerationPrompt(segment, "video_prompt"),
+                script_file: scriptFile,
+                duration_seconds: segment.duration_seconds,
+              },
+            } : undefined}
           />
         </div>
       </div>
@@ -712,6 +741,7 @@ export function SegmentCard({
   scenes,
   props,
   projectName,
+  scriptFile,
   durationOptions,
   isGridMode,
   onUpdatePrompt,
@@ -848,6 +878,7 @@ export function SegmentCard({
             segment={segment}
             aspectRatio={aspectRatio}
             projectName={projectName}
+            scriptFile={scriptFile}
             segmentId={segmentId}
             isGridMode={isGridMode}
             onGenerateStoryboard={onGenerateStoryboard}

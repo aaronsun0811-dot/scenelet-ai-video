@@ -15,6 +15,7 @@ from server.agent_runtime.service import AssistantService
 from server.agent_runtime.session_manager import SessionCapacityError
 from server.auth import CurrentUser
 from server.routers.assistant import get_assistant_service
+from server.services.project_access import project_manager_for_user
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +142,7 @@ async def agent_chat(
 
     # 验证项目是否存在
     try:
-        service.pm.get_project_path(body.project_name)
+        project_manager_for_user(service.pm, _user.id).get_project_path(body.project_name)
     except (FileNotFoundError, KeyError):
         raise HTTPException(status_code=404, detail=_t("project_not_found", name=body.project_name))
 
@@ -169,6 +170,7 @@ async def agent_chat(
             body.message,
             session_id=body.session_id,
             locale=get_locale(request),
+            user_id=_user.id,
         )
         session_id = result["session_id"]
     except SessionCapacityError as exc:

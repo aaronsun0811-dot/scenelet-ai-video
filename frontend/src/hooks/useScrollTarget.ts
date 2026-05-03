@@ -1,9 +1,11 @@
 import { useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { useAppStore } from "@/stores/app-store";
 import type { WorkspaceFocusTarget } from "@/types";
 
 interface UseScrollTargetOptions {
   prepareTarget?: (target: WorkspaceFocusTarget) => boolean;
+  onResolved?: (target: WorkspaceFocusTarget) => void;
 }
 
 /**
@@ -21,6 +23,7 @@ export function useScrollTarget(
   type: string,
   options?: UseScrollTargetOptions,
 ): void {
+  const { t } = useTranslation("dashboard");
   const scrollTarget = useAppStore((s) => s.scrollTarget);
   const clearScrollTarget = useAppStore((s) => s.clearScrollTarget);
   const pushToast = useAppStore((s) => s.pushToast);
@@ -28,6 +31,7 @@ export function useScrollTarget(
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const highlightedElementRef = useRef<HTMLElement | null>(null);
   const prepareTarget = options?.prepareTarget;
+  const onResolved = options?.onResolved;
 
   useEffect(() => {
     return () => {
@@ -78,13 +82,14 @@ export function useScrollTarget(
         }
         if (Date.now() >= currentTarget.expires_at) {
           clearScrollTarget(requestId);
-          pushToast(`未找到可定位的内容：${currentTarget.id}`, "warning");
+          pushToast(t("scroll_target_not_found", { id: currentTarget.id }), "warning");
           return;
         }
         retryTimerRef.current = setTimeout(tryResolveTarget, 50);
         return;
       }
 
+      onResolved?.(currentTarget);
       el.scrollIntoView({ behavior: "smooth", block: "center" });
 
       if (currentTarget.highlight) {
@@ -113,5 +118,5 @@ export function useScrollTarget(
         retryTimerRef.current = null;
       }
     };
-  }, [clearScrollTarget, prepareTarget, pushToast, scrollTarget, type]);
+  }, [clearScrollTarget, onResolved, prepareTarget, pushToast, scrollTarget, t, type]);
 }

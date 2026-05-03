@@ -82,8 +82,13 @@ class _FakeConfigResolver:
 
     def __init__(self, video_generate_audio: bool = False):
         self._video_generate_audio = video_generate_audio
+        self.project_calls = []
 
     async def video_generate_audio(self, project_name=None):
+        return self._video_generate_audio
+
+    async def video_generate_audio_from_project(self, project):
+        self.project_calls.append(project)
         return self._video_generate_audio
 
 
@@ -97,6 +102,7 @@ def _build_generator(tmp_path: Path) -> MediaGenerator:
     gen._video_backend = _FakeVideoBackend()
     gen._user_id = "default"
     gen._config = _FakeConfigResolver()
+    gen._project_config = None
     gen.versions = _FakeVersions()
     gen.usage_tracker = _FakeUsage()
     return gen
@@ -172,6 +178,23 @@ class TestMediaGenerator:
             resource_id="E1S03",
         )
         # VideoBackend 路径尊重 ConfigResolver 返回的值
+        assert gen.usage_tracker.started[-1]["generate_audio"] is False
+
+    @pytest.mark.asyncio
+    async def test_video_generate_audio_uses_loaded_project_config_when_available(self, tmp_path):
+        gen = _build_generator(tmp_path)
+        config = _FakeConfigResolver(video_generate_audio=False)
+        project = {"video_generate_audio": False, "billing_mode": "platform_credits"}
+        gen._config = config
+        gen._project_config = project
+
+        await gen.generate_video_async(
+            prompt="p",
+            resource_type="videos",
+            resource_id="E1S04A",
+        )
+
+        assert config.project_calls == [project]
         assert gen.usage_tracker.started[-1]["generate_audio"] is False
 
     @pytest.mark.asyncio

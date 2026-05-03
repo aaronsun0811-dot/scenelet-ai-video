@@ -121,6 +121,8 @@ description: 将小说转换为短视频的端到端工作流编排器。当用�
 
 dispatch prompt 通用参数：项目名称、项目路径、集数、本集小说文件路径。
 
+若 `content_type=travel_video`，进入 reference_video 预处理前先确认 `project.travel_video_settings.route_preview.route_ready == true`；未通过时先执行路线预检/补充路线设置，不要直接拆普通剧情 unit。
+
 （三个预处理 subagent 会自行读 project.json + 执行
 `python .claude/skills/manage-project/scripts/get_video_capabilities.py --project {项目名}`
 拿到模型能力与用户偏好；主 agent 不需要预先注入角色/场景/道具列表或 `supported_durations` / `max_duration` / `max_reference_images` / `default_duration` 等数据。）

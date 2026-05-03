@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { act, render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { ReferenceVideoCanvas } from "./ReferenceVideoCanvas";
 import { useReferenceVideoStore } from "@/stores/reference-video-store";
 import { useProjectsStore } from "@/stores/projects-store";
@@ -65,6 +65,214 @@ describe("ReferenceVideoCanvas", () => {
     });
   });
 
+  it("shows a travel-video delivery check with route nodes and reference images", async () => {
+    const unit = mkUnit("E1U1", "沿千日前通向东步行，保持街景推进。");
+    unit.duration_seconds = 3;
+    unit.generated_assets.video_clip = "reference_videos/E1U1.mp4";
+    unit.generated_assets.status = "completed";
+    vi.spyOn(API, "listReferenceVideoUnits").mockResolvedValue({ units: [unit] });
+    useProjectsStore.setState({
+      currentProjectName: "proj",
+      currentProjectData: {
+        ...STUB_PROJECT,
+        content_type: "travel_video",
+        scenes: {
+          千日前通街景: {
+            description: "旅游路线参考图",
+            scene_sheet: "_global_assets/scene/street.png",
+            asset_source: {
+              kind: "asset_library",
+              asset_id: "scene-street",
+              asset_type: "scene",
+              source_kind: "travel_reference",
+              source_project: "proj",
+              source_file: "travel_references/street.png",
+            },
+          },
+        },
+        travel_video_settings: {
+          origin: "大阪难波站",
+          destination: "黑门市场",
+          route_source: "reference_images",
+          target_duration: "custom",
+          custom_duration_seconds: 3,
+          reference_images: ["travel_references/street.png"],
+          route_preview: {
+            source: "reference_images",
+            google_configured: false,
+            route_ready: true,
+            origin: "大阪难波站",
+            destination: "黑门市场",
+            summary: "大阪难波站 -> 黑门市场",
+            distance_text: "1.2 km",
+            duration_text: "15 mins",
+            nodes: [
+              {
+                id: "node-1",
+                label: "千日前通",
+                instruction: "沿千日前通向东步行。",
+                source: "manual",
+              },
+            ],
+            reference_images: [],
+            warnings: [],
+            generated_at: "2026-05-02T00:00:00+08:00",
+          },
+        },
+      },
+    });
+
+    render(<ReferenceVideoCanvas projectName="proj" episode={1} />);
+
+    expect(await screen.findByText("旅游视频交付检查")).toBeInTheDocument();
+    expect(screen.getByText("本集可交付")).toBeInTheDocument();
+    expect(screen.getByText("已预检，1 个节点")).toBeInTheDocument();
+    expect(screen.getByText("当前 3s / 目标 3s")).toBeInTheDocument();
+    expect(screen.getByText("已应用 1 / 1 张参考图")).toBeInTheDocument();
+    expect(screen.getByText("路线节点：千日前通")).toBeInTheDocument();
+    expect(screen.getByText("使用项目级旅游参考图 1 张。")).toBeInTheDocument();
+    expect(screen.getByText("项目级场景素材：1 / 1 张已应用。")).toBeInTheDocument();
+  });
+
+  it("flags travel reference images that are not applied as scene assets", async () => {
+    const unit = mkUnit("E1U1", "沿千日前通向东步行，保持街景推进。");
+    unit.duration_seconds = 3;
+    unit.generated_assets.video_clip = "reference_videos/E1U1.mp4";
+    unit.generated_assets.status = "completed";
+    vi.spyOn(API, "listReferenceVideoUnits").mockResolvedValue({ units: [unit] });
+    const addAssetSpy = vi.spyOn(API, "addAssetFromProjectFile").mockResolvedValue({
+      asset: {
+        id: "scene-street",
+        type: "scene",
+        name: "street",
+        description: "旅游路线参考图：travel_references/street.png",
+        voice_style: "",
+        image_path: "_global_assets/scene/street.png",
+        source_project: "proj",
+        updated_at: "2026-05-02T00:00:00+08:00",
+      },
+    });
+    vi.spyOn(API, "applyAssetsToProject").mockResolvedValue({
+      succeeded: [{ id: "scene-street", name: "street" }],
+      skipped: [],
+      failed: [],
+    });
+    vi.spyOn(API, "getProject").mockResolvedValue({
+      project: {
+        ...STUB_PROJECT,
+        content_type: "travel_video",
+        scenes: {
+          千日前通街景: {
+            description: "旅游路线参考图",
+            scene_sheet: "_global_assets/scene/street.png",
+            asset_source: {
+              kind: "asset_library",
+              asset_id: "scene-street",
+              asset_type: "scene",
+              source_kind: "travel_reference",
+              source_project: "proj",
+              source_file: "travel_references/street.png",
+            },
+          },
+        },
+        travel_video_settings: {
+          origin: "大阪难波站",
+          destination: "黑门市场",
+          route_source: "reference_images",
+          target_duration: "custom",
+          custom_duration_seconds: 3,
+          reference_images: ["travel_references/street.png"],
+          route_preview: {
+            source: "reference_images",
+            google_configured: false,
+            route_ready: true,
+            origin: "大阪难波站",
+            destination: "黑门市场",
+            summary: "大阪难波站 -> 黑门市场",
+            distance_text: "1.2 km",
+            duration_text: "15 mins",
+            nodes: [
+              {
+                id: "node-1",
+                label: "千日前通",
+                instruction: "沿千日前通向东步行。",
+                source: "manual",
+              },
+            ],
+            reference_images: [],
+            warnings: [],
+            generated_at: "2026-05-02T00:00:00+08:00",
+          },
+        },
+      },
+      scripts: {},
+    });
+    useProjectsStore.setState({
+      currentProjectName: "proj",
+      currentProjectData: {
+        ...STUB_PROJECT,
+        content_type: "travel_video",
+        travel_video_settings: {
+          origin: "大阪难波站",
+          destination: "黑门市场",
+          route_source: "reference_images",
+          target_duration: "custom",
+          custom_duration_seconds: 3,
+          reference_images: ["travel_references/street.png"],
+          route_preview: {
+            source: "reference_images",
+            google_configured: false,
+            route_ready: true,
+            origin: "大阪难波站",
+            destination: "黑门市场",
+            summary: "大阪难波站 -> 黑门市场",
+            distance_text: "1.2 km",
+            duration_text: "15 mins",
+            nodes: [
+              {
+                id: "node-1",
+                label: "千日前通",
+                instruction: "沿千日前通向东步行。",
+                source: "manual",
+              },
+            ],
+            reference_images: [],
+            warnings: [],
+            generated_at: "2026-05-02T00:00:00+08:00",
+          },
+        },
+      },
+    });
+
+    render(<ReferenceVideoCanvas projectName="proj" episode={1} />);
+
+    expect(await screen.findByText("旅游视频交付检查")).toBeInTheDocument();
+    expect(screen.getByText("待处理 1 项")).toBeInTheDocument();
+    expect(screen.getByText("待应用 1 / 1 张参考图")).toBeInTheDocument();
+    expect(screen.getByText("1 张参考图尚未应用为场景素材。")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /一键应用场景素材|Apply scene assets/ }));
+
+    await waitFor(() => {
+      expect(addAssetSpy).toHaveBeenCalledWith({
+        project_name: "proj",
+        file_path: "travel_references/street.png",
+        asset_type: "scene",
+        name: "street",
+        description: "旅游路线参考图：travel_references/street.png",
+        conflict_policy: "rename",
+      });
+      expect(API.applyAssetsToProject).toHaveBeenCalledWith({
+        asset_ids: ["scene-street"],
+        target_project: "proj",
+        conflict_policy: "skip",
+      });
+      expect(API.getProject).toHaveBeenCalledWith("proj");
+    });
+    expect(await screen.findByText("已应用 1 / 1 张参考图")).toBeInTheDocument();
+    expect(await screen.findByText("场景素材已补齐，可以继续生成或交付检查。")).toBeInTheDocument();
+    expect(useAppStore.getState().toast?.text).toContain("已应用 1 张旅游参考图");
+  });
+
   it("renders the ReferenceVideoCard textarea once auto-selected", async () => {
     vi.spyOn(API, "listReferenceVideoUnits").mockResolvedValue({
       units: [mkUnit("E1U1")],
@@ -85,6 +293,34 @@ describe("ReferenceVideoCanvas", () => {
     await waitFor(() => {
       expect((screen.getByRole("combobox") as HTMLTextAreaElement).value).toContain("hello from B");
     });
+  });
+
+  it("selects and scrolls to a reference unit when a workspace target arrives", async () => {
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(window.HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+    vi.spyOn(API, "listReferenceVideoUnits").mockResolvedValue({
+      units: [mkUnit("E1U1", "first"), mkUnit("E1U2", "second")],
+    });
+
+    render(<ReferenceVideoCanvas projectName="proj" episode={1} />);
+    await waitFor(() => expect(screen.getByTestId("unit-row-E1U2")).toBeInTheDocument());
+
+    act(() => {
+      useAppStore.getState().triggerScrollTo({
+        type: "reference-unit",
+        id: "E1U2",
+        route: "/episodes/1",
+      });
+    });
+
+    await waitFor(() => {
+      expect((screen.getByRole("combobox") as HTMLTextAreaElement).value).toContain("second");
+    });
+    expect(screen.getByTestId("unit-row-E1U2")).toHaveAttribute("aria-selected", "true");
+    expect(scrollIntoView).toHaveBeenCalled();
   });
 
   it("adds a new unit via the store when the button is clicked", async () => {
@@ -182,6 +418,107 @@ describe("ReferenceVideoCanvas", () => {
     await waitFor(() => expect(genSpy).toHaveBeenCalled());
     await waitFor(() => {
       expect(useAppStore.getState().toast?.text).toMatch(/Queued for generation|已加入生成队列/);
+    });
+  });
+
+  it("batch-generates only missing reference videos that are not already running", async () => {
+    const ready = mkUnit("E1U2");
+    ready.generated_assets.video_clip = "reference_videos/E1U2.mp4";
+    ready.generated_assets.status = "completed";
+    vi.spyOn(API, "listReferenceVideoUnits").mockResolvedValue({
+      units: [mkUnit("E1U1"), ready, mkUnit("E1U3")],
+    });
+    useTasksStore.setState({
+      tasks: [
+        makeTask({
+          task_type: "reference_video",
+          resource_id: "E1U3",
+          status: "queued",
+        }),
+      ],
+    });
+    const genSpy = vi.spyOn(API, "generateReferenceVideoUnit").mockResolvedValue({
+      task_id: "t-batch-1",
+      deduped: false,
+    });
+
+    render(<ReferenceVideoCanvas projectName="proj" episode={1} />);
+    const batchButton = await screen.findByRole("button", {
+      name: /Generate Missing Videos 1|生成缺失视频 1/,
+    });
+    fireEvent.click(batchButton);
+
+    await waitFor(() => {
+      expect(genSpy).toHaveBeenCalledTimes(1);
+      expect(genSpy).toHaveBeenCalledWith("proj", 1, "E1U1");
+      expect(useAppStore.getState().toast?.text).toMatch(/reference video|参考视频/);
+    });
+  });
+
+  it("shows an active-task hint when every missing reference video is already running", async () => {
+    vi.spyOn(API, "listReferenceVideoUnits").mockResolvedValue({
+      units: [mkUnit("E1U1"), mkUnit("E1U2")],
+    });
+    useTasksStore.setState({
+      tasks: [
+        makeTask({
+          task_type: "reference_video",
+          resource_id: "E1U1",
+          status: "queued",
+        }),
+        makeTask({
+          task_id: "reference-active-2",
+          task_type: "reference_video",
+          resource_id: "E1U2",
+          status: "running",
+        }),
+      ],
+    });
+    const genSpy = vi.spyOn(API, "generateReferenceVideoUnit").mockResolvedValue({
+      task_id: "t-batch-1",
+      deduped: false,
+    });
+
+    render(<ReferenceVideoCanvas projectName="proj" episode={1} />);
+    const batchButton = await screen.findByRole("button", {
+      name: /缺失视频生成中|Missing Videos Running/,
+    });
+    expect(batchButton).not.toBeDisabled();
+    fireEvent.click(batchButton);
+
+    await waitFor(() => {
+      expect(genSpy).not.toHaveBeenCalled();
+      expect(useAppStore.getState().toast?.text).toContain("已在队列中");
+    });
+  });
+
+  it("prevents reference generation when platform-credit balance is too low", async () => {
+    useProjectsStore.setState({
+      currentProjectName: "proj",
+      currentProjectData: { ...STUB_PROJECT, billing_mode: "platform_credits" },
+    });
+    vi.spyOn(API, "listReferenceVideoUnits").mockResolvedValue({ units: [mkUnit("E1U1")] });
+    vi.spyOn(API, "getCreditBalance").mockResolvedValue({
+      balance: 0,
+      minimum_generation_balance: 10,
+      pending_purchase_credits: 0,
+      entries: [],
+    });
+    const genSpy = vi.spyOn(API, "generateReferenceVideoUnit").mockResolvedValue({
+      task_id: "t1",
+      deduped: false,
+    });
+
+    render(<ReferenceVideoCanvas projectName="proj" episode={1} />);
+    const btn = await screen.findByRole("button", { name: /Generate video|生成视频/ });
+    fireEvent.click(btn);
+
+    await waitFor(() => {
+      expect(API.getCreditBalance).toHaveBeenCalled();
+      expect(genSpy).not.toHaveBeenCalled();
+      expect(useAppStore.getState().toast?.tone).toBe("error");
+      expect(useAppStore.getState().toast?.text).toContain("平台积分不足");
+      expect(useAppStore.getState().toast?.text).toContain("当前 0");
     });
   });
 

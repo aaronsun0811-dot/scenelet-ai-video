@@ -11,18 +11,20 @@ from lib.style_templates import (
 
 
 def test_templates_count_and_categories():
-    assert len(STYLE_TEMPLATES) == 36
+    assert len(STYLE_TEMPLATES) == 43
+    contents = [t for t in STYLE_TEMPLATES.values() if t["category"] == "content"]
     lives = [t for t in STYLE_TEMPLATES.values() if t["category"] == "live"]
     anims = [t for t in STYLE_TEMPLATES.values() if t["category"] == "anim"]
+    assert len(contents) == 7
     assert len(lives) == 18
     assert len(anims) == 18
 
 
 def test_template_ids_unique_and_slug_shaped():
     for tpl_id, data in STYLE_TEMPLATES.items():
-        assert tpl_id.startswith(("live_", "anim_")), tpl_id
+        assert tpl_id.startswith(("content_", "live_", "anim_")), tpl_id
         assert "prompt" in data and data["prompt"].strip()
-        assert data["category"] in ("live", "anim")
+        assert data["category"] in ("content", "live", "anim")
 
 
 def test_legacy_map_targets_exist():
@@ -45,7 +47,9 @@ def test_resolve_template_prompt_unknown_raises():
 
 def test_list_templates_by_category():
     grouped = list_templates_by_category()
-    assert set(grouped.keys()) == {"live", "anim"}
+    assert set(grouped.keys()) == {"content", "live", "anim"}
+    assert len(grouped["content"]) == 7
     assert len(grouped["live"]) == 18
     assert len(grouped["anim"]) == 18
+    assert grouped["content"][0]["id"].startswith("content_")
     assert grouped["live"][0]["id"].startswith("live_")

@@ -49,6 +49,11 @@ python .claude/skills/manage-project/scripts/get_video_capabilities.py --project
 
 使用 Glob 工具检查 `projects/{项目名}/drafts/episode_{N}/` 是否存在。
 使用 Read 工具读取 `projects/{项目名}/project.json` 了解角色/场景/道具列表。
+同时记录 `content_type`：
+- `scene_sketch`：保留几分钟情景剧的连续对话、停顿、眼神、走位和多人场面调度，不要压缩成短剧反转。
+- `short_drama`：前 1-2 个场景必须有明确钩子，中段冲突升级，结尾保留悬念或反转。
+- `fiction_adaptation`：把心理描写/旁白叙述转成动作、对话、道具和场景信息，围绕章节节点推进。
+- `ad_story`：先建立痛点或冲突，再让产品/服务自然入戏，卖点必须通过动作、结果变化或对话体现。
 
 **Step 2**: 调用 Gemini 生成规范化剧本
 
@@ -119,5 +124,6 @@ python .claude/skills/generate-script/scripts/normalize_drama_script.py --episod
 
 - 场景 ID 格式：E{集数}S{两位序号}（如 E1S01）
 - 每个场景应为一个独立的视觉画面，可在指定时长内完成
+- 内容类型优先级高于通用 drama 规则：情景剧保留表演节奏，短剧强化钩子与反转，小说改编强调可拍化，广告剧情强调痛点和产品入戏。
 - 时长取自 Step 0 查得的 `supported_durations`；贴近 `default_duration`，复杂画面（打斗/大场面/情绪铺陈）可选更长值，不超过 `max_duration`
 - segment_break 标记真正的镜头切换点（场景、时间、地点的重大变化）

@@ -1,4 +1,5 @@
 import contextlib
+import json
 from pathlib import Path
 
 import pytest
@@ -28,6 +29,7 @@ class _FakePM:
             "content_mode": "narration",
             "style": "Anime",
             "style_description": "cinematic",
+            "character_style_prompt": "真人短剧质感，五官自然",
             "characters": {
                 "Alice": {
                     "character_sheet": "characters/Alice.png",
@@ -38,6 +40,7 @@ class _FakePM:
             "props": {"玉佩": {"prop_sheet": "props/玉佩.png"}},
         }
         self.script = {
+            "episode": 1,
             "content_mode": "narration",
             "segments": [
                 {
@@ -201,10 +204,11 @@ class TestGenerationTasks:
         monkeypatch.setattr(
             generation_tasks,
             "emit_project_change_batch",
-            lambda project_name, changes, source="worker": emitted_batches.append(
+            lambda project_name, changes, source="worker", **kwargs: emitted_batches.append(
                 {
                     "project_name": project_name,
                     "source": source,
+                    "user_id": kwargs.get("user_id"),
                     "changes": list(changes),
                 }
             ),
@@ -259,6 +263,7 @@ class TestGenerationTasks:
         )
         assert character_result["resource_type"] == "characters"
         assert fake_pm.project["characters"]["Alice"]["character_sheet"] == "characters/Alice.png"
+        assert "角色设定图风格要求：真人短剧质感，五官自然" in fake_generator.image_calls[-1]["prompt"]
 
         scene_result = await generation_tasks.execute_scene_task(
             "demo",
@@ -284,10 +289,18 @@ class TestGenerationTasks:
         )
         assert dispatch["resource_type"] == "storyboards"
         assert len(emitted_batches) == 1
+        assert emitted_batches[0]["user_id"] == "default"
         emitted_change = emitted_batches[0]["changes"][0]
         assert emitted_change["entity_type"] == "segment"
         assert emitted_change["action"] == "storyboard_ready"
         assert emitted_change["entity_id"] == "E1S02"
+        assert emitted_change["episode"] == 1
+        assert emitted_change["focus"] == {
+            "pane": "episode",
+            "episode": 1,
+            "anchor_type": "segment",
+            "anchor_id": "E1S02",
+        }
         assert "asset_fingerprints" in emitted_change
 
         with pytest.raises(ValueError):
@@ -332,8 +345,9 @@ class TestGenerationTasks:
         fake_video_backend = object()
 
         class _FakeResolver:
-            def __init__(self, session_factory):
+            def __init__(self, session_factory, **kwargs):
                 self.session_factory = session_factory
+                self.user_id = kwargs.get("user_id", "default")
 
             @contextlib.asynccontextmanager
             async def session(self):
@@ -369,7 +383,7 @@ class TestGenerationTasks:
         monkeypatch.setattr(
             generation_tasks,
             "emit_project_change_batch",
-            lambda project_name, changes, source: captured.append(changes),
+            lambda project_name, changes, source, **kwargs: captured.append({"changes": changes, "user_id": kwargs.get("user_id")}),
         )
 
         project_path = tmp_path / "demo"
@@ -389,7 +403,8 @@ class TestGenerationTasks:
         )
 
         assert len(captured) == 1
-        change = captured[0][0]
+        assert captured[0]["user_id"] == "default"
+        change = captured[0]["changes"][0]
         assert "asset_fingerprints" in change
         assert "storyboards/scene_E1S01.png" in change["asset_fingerprints"]
         assert isinstance(change["asset_fingerprints"]["storyboards/scene_E1S01.png"], int)
@@ -419,6 +434,39 @@ class TestGenerationTasks:
         with pytest.raises(ValueError):
             await generation_tasks.execute_prop_task("demo", "玉佩", {"prompt": ""})
 
+    def test_collect_grid_reference_images_accepts_scripts_prefixed_script_file(self, tmp_path):
+        project_path = _prepare_files(tmp_path)
+        fake_pm = _FakePM(project_path)
+        (project_path / "scripts").mkdir()
+        (project_path / "project.json").write_text(json.dumps(fake_pm.project, ensure_ascii=False), encoding="utf-8")
+        (project_path / "scripts" / "episode_1.json").write_text(
+            json.dumps(fake_pm.script, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        refs, metadata = generation_tasks._collect_grid_reference_images(
+            project_path,
+            {"script_file": "scripts/episode_1.json"},
+            ["E1S02"],
+        )
+
+        assert refs == [
+            project_path / "characters" / "Alice.png",
+            project_path / "scenes" / "祠堂.png",
+            project_path / "props" / "玉佩.png",
+        ]
+        assert metadata == [
+            {"path": "characters/Alice.png", "name": "Alice", "ref_type": "character"},
+            {"path": "scenes/祠堂.png", "name": "祠堂", "ref_type": "scene"},
+            {"path": "props/玉佩.png", "name": "玉佩", "ref_type": "prop"},
+        ]
+
+    def test_resolve_grid_script_path_blocks_escape(self, tmp_path):
+        project_path = _prepare_files(tmp_path)
+
+        assert generation_tasks._resolve_grid_script_path(project_path, "../project.json") is None
+        assert generation_tasks._resolve_grid_script_path(project_path, "scripts/../project.json") is None
+
 
 class TestGetAspectRatio:
     def test_reads_top_level_aspect_ratio(self):
@@ -433,6 +481,11 @@ class TestGetAspectRatio:
     def test_fallback_to_content_mode_drama(self):
         project = {"content_mode": "drama"}
         assert generation_tasks.get_aspect_ratio(project, "videos") == "16:9"
+
+    def test_content_type_controls_missing_aspect_ratio(self):
+        project = {"content_type": "scene_sketch", "content_mode": "narration"}
+        assert generation_tasks.get_aspect_ratio(project, "videos") == "16:9"
+        assert generation_tasks.get_aspect_ratio(project, "storyboards") == "16:9"
 
     def test_characters_always_3_4(self):
         project = {"aspect_ratio": "16:9"}

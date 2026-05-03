@@ -15,6 +15,7 @@ import {
 import { motion, AnimatePresence } from "framer-motion";
 import { useTranslation } from "react-i18next";
 import { API } from "@/api";
+import { useGenerationPreflightGate } from "@/components/ui/GenerationPreflight";
 import { errMsg } from "@/utils/async";
 import type { GridGeneration, ReferenceImage } from "@/types/grid";
 
@@ -162,6 +163,11 @@ export function GridPreviewPanel({
   const [error, setError] = useState<string | null>(null);
   const [regenerating, setRegenerating] = useState(false);
   const { t } = useTranslation("dashboard");
+  const {
+    checkingGenerationPreflight,
+    generationPreflightDialog,
+    runWithGenerationPreflight,
+  } = useGenerationPreflightGate();
 
   const hasGrids = gridIds.length > 0;
   const multipleGrids = gridIds.length > 1;
@@ -212,7 +218,33 @@ export function GridPreviewPanel({
 
   const refs = grid?.reference_images ?? [];
 
+  const handleRegenerate = () => {
+    if (!selectedGridId || regenerating || isInProgress) return;
+    void runWithGenerationPreflight(
+      {
+        projectName,
+        taskType: "grid",
+        resourceId: selectedGridId,
+        targetLabel: selectedGridId,
+        payload: { grid_id: selectedGridId },
+      },
+      async () => {
+        setRegenerating(true);
+        try {
+          await API.regenerateGrid(projectName, selectedGridId);
+          setGrid((prev) => prev ? { ...prev, status: "pending" } : prev);
+          onRegenerated?.();
+        } catch (err: unknown) {
+          setError(errMsg(err, t("grid_regenerate_failed")));
+        } finally {
+          setRegenerating(false);
+        }
+      },
+    );
+  };
+
   return (
+    <>
     <div>
       {/* Toggle header */}
       <button
@@ -318,27 +350,15 @@ export function GridPreviewPanel({
 
                     <motion.button
                       type="button"
-                      disabled={regenerating || isInProgress}
-                      onClick={() => {
-                        if (!selectedGridId || regenerating || isInProgress) return;
-                        setRegenerating(true);
-                        API.regenerateGrid(projectName, selectedGridId)
-                          .then(() => {
-                            setGrid((prev) => prev ? { ...prev, status: "pending" } : prev);
-                            onRegenerated?.();
-                          })
-                          .catch((err: unknown) => {
-                            setError(errMsg(err, t("grid_regenerate_failed")));
-                          })
-                          .finally(() => setRegenerating(false));
-                      }}
+                      disabled={regenerating || checkingGenerationPreflight || isInProgress}
+                      onClick={handleRegenerate}
                       className={`ml-auto shrink-0 whitespace-nowrap inline-flex items-center gap-1 rounded border border-amber-800/30 bg-amber-950/30 px-2 py-1 text-[10px] font-medium text-amber-400/80 transition-colors ${
-                        regenerating || isInProgress ? "opacity-50 cursor-not-allowed" : "hover:bg-amber-900/40 hover:text-amber-300"
+                        regenerating || checkingGenerationPreflight || isInProgress ? "opacity-50 cursor-not-allowed" : "hover:bg-amber-900/40 hover:text-amber-300"
                       }`}
-                      whileTap={regenerating || isInProgress ? {} : { scale: 0.95 }}
+                      whileTap={regenerating || checkingGenerationPreflight || isInProgress ? {} : { scale: 0.95 }}
                     >
-                      <RefreshCw className={`h-3 w-3 ${regenerating || isInProgress ? "animate-spin" : ""}`} />
-                      {regenerating ? t("grid_regenerating") : isInProgress ? t("generating_grid") : t("grid_regenerate_btn")}
+                      <RefreshCw className={`h-3 w-3 ${regenerating || checkingGenerationPreflight || isInProgress ? "animate-spin" : ""}`} />
+                      {regenerating || checkingGenerationPreflight ? t("grid_regenerating") : isInProgress ? t("generating_grid") : t("grid_regenerate_btn")}
                     </motion.button>
                   </div>
 
@@ -389,5 +409,7 @@ export function GridPreviewPanel({
         )}
       </AnimatePresence>
     </div>
+    {generationPreflightDialog}
+    </>
   );
 }

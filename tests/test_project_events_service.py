@@ -218,3 +218,45 @@ class TestProjectEventService:
 
         await service.unsubscribe("demo", queue)
         await service.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_emitted_batch_is_scoped_to_user_namespace(self, tmp_path):
+        root_pm = ProjectManager(tmp_path / "projects")
+        for user_id in ("alice", "bob"):
+            scoped_pm = root_pm.for_user(user_id)
+            scoped_pm.create_project("demo")
+            scoped_pm.create_project_metadata("demo", f"{user_id} Demo", "Anime", "narration")
+
+        service = ProjectEventService(tmp_path, poll_interval=1.0)
+        await service.start()
+        alice_queue, _ = await service.subscribe("demo", user_id="alice")
+        bob_queue, _ = await service.subscribe("demo", user_id="bob")
+
+        try:
+            emit_project_change_batch(
+                "demo",
+                [
+                    {
+                        "entity_type": "segment",
+                        "action": "storyboard_ready",
+                        "entity_id": "E1S01",
+                        "label": "分镜「E1S01」",
+                        "focus": None,
+                        "important": True,
+                    }
+                ],
+                source="worker",
+                user_id="alice",
+            )
+
+            event_name, payload = await asyncio.wait_for(alice_queue.get(), timeout=1.0)
+            assert event_name == "changes"
+            assert payload["source"] == "worker"
+            assert payload["changes"][0]["action"] == "storyboard_ready"
+
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(bob_queue.get(), timeout=0.1)
+        finally:
+            await service.unsubscribe("demo", alice_queue, user_id="alice")
+            await service.unsubscribe("demo", bob_queue, user_id="bob")
+            await service.shutdown()

@@ -135,3 +135,17 @@ class TestCredentialRepository:
         )
         await session.flush()
         assert c.base_url == "https://proxy.example.com/v1/"
+
+    async def test_scopes_credentials_by_user(self, session: AsyncSession):
+        repo_a = CredentialRepository(session, user_id="user-a")
+        repo_b = CredentialRepository(session, user_id="user-b")
+
+        cred_a = await repo_a.create(provider="gemini-aistudio", name="A", api_key="key-a")
+        cred_b = await repo_b.create(provider="gemini-aistudio", name="B", api_key="key-b")
+        await session.flush()
+
+        assert cred_a.is_active is True
+        assert cred_b.is_active is True
+        assert await repo_a.get_by_id(cred_b.id) is None
+        assert [c.name for c in await repo_a.list_by_provider("gemini-aistudio")] == ["A"]
+        assert [c.name for c in await repo_b.list_by_provider("gemini-aistudio")] == ["B"]

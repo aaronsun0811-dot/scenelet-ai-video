@@ -3,6 +3,7 @@
 import contextlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from lib.db.base import PLATFORM_USER_ID
 from lib.text_backends.base import TextTaskType
 from lib.text_backends.factory import create_text_backend_for_task
 
@@ -64,6 +65,44 @@ async def test_creates_ark_backend():
             "ark",
             api_key="ark-key",
             model="doubao-seed-2-0-lite-260215",
+        )
+        assert result is mock_backend
+
+
+async def test_platform_credit_project_reads_project_as_user_but_credentials_as_platform():
+    project = {
+        "billing_mode": "platform_credits",
+        "text_backend_script": "openai/gpt-4.1-mini",
+    }
+    manager = MagicMock()
+    scoped_manager = MagicMock()
+    manager.for_user.return_value = scoped_manager
+    scoped_manager.load_project.return_value = project
+    mock_resolver = _make_mock_resolver(
+        text_backend_for_task_from_project=("openai", "gpt-4.1-mini"),
+        provider_config={"api_key": "platform-openai-key", "base_url": ""},
+    )
+
+    with (
+        patch("lib.text_backends.factory.get_project_manager", return_value=manager),
+        patch("lib.text_backends.factory.ConfigResolver", return_value=mock_resolver) as resolver_cls,
+        patch("lib.text_backends.factory.create_backend") as mock_create,
+    ):
+        mock_backend = MagicMock()
+        mock_create.return_value = mock_backend
+
+        result = await create_text_backend_for_task(TextTaskType.SCRIPT, "same", user_id="bob")
+
+        manager.for_user.assert_called_once_with("bob")
+        scoped_manager.load_project.assert_called_once_with("same")
+        resolver_cls.assert_called_once()
+        assert resolver_cls.call_args.kwargs["user_id"] == PLATFORM_USER_ID
+        mock_resolver.text_backend_for_task_from_project.assert_awaited_once_with(TextTaskType.SCRIPT, project)
+        mock_create.assert_called_once_with(
+            "openai",
+            api_key="platform-openai-key",
+            model="gpt-4.1-mini",
+            base_url=None,
         )
         assert result is mock_backend
 

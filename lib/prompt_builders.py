@@ -15,7 +15,13 @@
 """
 
 
-def build_character_prompt(name: str, description: str, style: str = "", style_description: str = "") -> str:
+def build_character_prompt(
+    name: str,
+    description: str,
+    style: str = "",
+    style_description: str = "",
+    character_style_prompt: str = "",
+) -> str:
     """
     构建角色设计图 Prompt
 
@@ -26,11 +32,14 @@ def build_character_prompt(name: str, description: str, style: str = "", style_d
         description: 角色外貌描述（应为叙事性段落）
         style: 项目风格
         style_description: AI 分析的风格描述
+        character_style_prompt: 项目级角色设定图风格要求
 
     Returns:
         完整的 Prompt 字符串
     """
     style_part = f"，{style}" if style else ""
+    character_style = character_style_prompt.strip()
+    character_style_part = f"\n角色设定图风格要求：{character_style}\n" if character_style else ""
 
     # 构建风格前缀
     style_prefix = ""
@@ -40,6 +49,7 @@ def build_character_prompt(name: str, description: str, style: str = "", style_d
     return f"""{style_prefix}角色设计参考图{style_part}。
 
 「{name}」的全身立绘。
+{character_style_part}
 
 {description}
 

@@ -18,6 +18,13 @@ import zhErrors from './zh/errors';
 import zhTemplates from './zh/templates';
 import zhAssets from './zh/assets';
 
+import jaCommon from './ja/common';
+import jaAuth from './ja/auth';
+import jaDashboard from './ja/dashboard';
+import jaErrors from './ja/errors';
+import jaTemplates from './ja/templates';
+import jaAssets from './ja/assets';
+
 const resources = {
   en: {
     common: enCommon,
@@ -35,6 +42,14 @@ const resources = {
     templates: zhTemplates,
     assets: zhAssets,
   },
+  ja: {
+    common: jaCommon,
+    auth: jaAuth,
+    dashboard: jaDashboard,
+    errors: jaErrors,
+    templates: jaTemplates,
+    assets: jaAssets,
+  },
 };
 
 voidCall(i18n
@@ -43,6 +58,8 @@ voidCall(i18n
   .init({
     resources,
     fallbackLng: 'zh',
+    supportedLngs: ['zh', 'en', 'ja'],
+    nonExplicitSupportedLngs: true,
     debug: false,
     interpolation: {
       escapeValue: false,

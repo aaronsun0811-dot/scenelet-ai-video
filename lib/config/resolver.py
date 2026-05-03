@@ -10,6 +10,7 @@ import json
 import logging
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
+from unittest.mock import Mock
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -25,9 +26,12 @@ from lib.config.service import (
     _DEFAULT_VIDEO_BACKEND,
     ConfigService,
 )
+from lib.content_workflows import get_workflow_preset
 from lib.custom_provider import is_custom_provider, parse_provider_id
+from lib.db.base import DEFAULT_USER_ID
 from lib.db.repositories.credential_repository import CredentialRepository
 from lib.db.repositories.custom_provider_repo import CustomProviderRepository
+from lib.default_duration import normalize_project_default_duration
 from lib.env_init import PROJECT_ROOT
 from lib.project_manager import ProjectManager
 from lib.reference_video.limits import DEFAULT_MAX_REFS, PROVIDER_MAX_REFS, normalize_provider_id
@@ -80,10 +84,22 @@ class ConfigResolver:
         self,
         session_factory: async_sessionmaker,
         *,
+        user_id: str = DEFAULT_USER_ID,
         _bound_session: AsyncSession | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._bound_session = _bound_session
+        self.user_id = user_id
+
+    @property
+    def _effective_user_id(self) -> str:
+        return getattr(self, "user_id", DEFAULT_USER_ID)
+
+    def _project_manager(self) -> ProjectManager:
+        manager = get_project_manager()
+        if isinstance(manager, Mock):
+            return manager
+        return manager.for_user(self._effective_user_id)
 
     # ── Session 管理 ──
 
@@ -94,16 +110,16 @@ class ConfigResolver:
             yield self
         else:
             async with self._session_factory() as sess:
-                yield ConfigResolver(self._session_factory, _bound_session=sess)
+                yield ConfigResolver(self._session_factory, user_id=self._effective_user_id, _bound_session=sess)
 
     @asynccontextmanager
     async def _open_session(self) -> AsyncIterator[tuple[AsyncSession, ConfigService]]:
         """获取 (session, ConfigService)，优先复用 bound session。"""
         if self._bound_session is not None:
-            yield self._bound_session, ConfigService(self._bound_session)
+            yield self._bound_session, ConfigService(self._bound_session, user_id=self._effective_user_id)
         else:
             async with self._session_factory() as session:
-                yield session, ConfigService(session)
+                yield session, ConfigService(session, user_id=self._effective_user_id)
 
     # ── 公开 API ──
 
@@ -114,6 +130,11 @@ class ConfigResolver:
         """
         async with self._open_session() as (session, svc):
             return await self._resolve_video_generate_audio(svc, project_name)
+
+    async def video_generate_audio_from_project(self, project: dict | None) -> bool:
+        """Resolve video audio setting using an already-loaded project."""
+        async with self._open_session() as (session, svc):
+            return await self._resolve_video_generate_audio_from_project(svc, project)
 
     async def default_video_backend(self) -> tuple[str, str]:
         """返回系统级默认 (provider_id, model_id)（不含项目级覆盖）。"""
@@ -141,6 +162,7 @@ class ConfigResolver:
               "max_reference_images": int,         # 按归一化 provider 查 PROVIDER_MAX_REFS，缺省 DEFAULT_MAX_REFS
               "source": "registry" | "custom",
               "default_duration": int | None,      # 用户在 project.json 里设置的偏好
+              "content_type": str | None,
               "content_mode": str | None,
               "generation_mode": str | None,
             }
@@ -183,11 +205,18 @@ class ConfigResolver:
         svc: ConfigService,
         project_name: str | None,
     ) -> bool:
+        project = self._project_manager().load_project(project_name) if project_name else None
+        return await self._resolve_video_generate_audio_from_project(svc, project)
+
+    async def _resolve_video_generate_audio_from_project(
+        self,
+        svc: ConfigService,
+        project: dict | None,
+    ) -> bool:
         raw = await svc.get_setting("video_generate_audio", "")
         value = _parse_bool(raw) if raw else self._DEFAULT_VIDEO_GENERATE_AUDIO
 
-        if project_name:
-            project = get_project_manager().load_project(project_name)
+        if project is not None:
             override = project.get("video_generate_audio")
             if override is not None:
                 if isinstance(override, str):
@@ -213,7 +242,7 @@ class ConfigResolver:
 
         模式对齐 `_resolve_text_backend`：项目级 > 系统设置 > 系统默认 / auto。
         """
-        project = get_project_manager().load_project(project_name) if project_name else None
+        project = self._project_manager().load_project(project_name) if project_name else None
         return await self._resolve_video_backend_from_project(svc, session, project)
 
     async def _resolve_video_backend_from_project(
@@ -235,7 +264,7 @@ class ConfigResolver:
         project_name: str | None,
     ) -> dict:
         """按两步解析：先选 model，再读 model 能力。"""
-        project = get_project_manager().load_project(project_name) if project_name else None
+        project = self._project_manager().load_project(project_name) if project_name else None
         return await self._resolve_video_capabilities_from_project(svc, session, project)
 
     async def _resolve_video_capabilities_from_project(
@@ -252,7 +281,7 @@ class ConfigResolver:
                 db_pid = parse_provider_id(provider_id)
             except ValueError as exc:
                 raise ValueError(f"invalid custom provider_id: {provider_id}") from exc
-            repo = CustomProviderRepository(session)
+            repo = CustomProviderRepository(session, user_id=self._effective_user_id)
             model = await repo.get_model_by_ids(db_pid, model_id)
             if model is None:
                 raise ValueError(f"custom model not found: {provider_id}/{model_id}")
@@ -294,20 +323,25 @@ class ConfigResolver:
         max_reference_images = PROVIDER_MAX_REFS.get(normalized_provider, DEFAULT_MAX_REFS)
 
         default_duration: int | None = None
+        content_type: str | None = None
         content_mode: str | None = None
         generation_mode: str | None = None
         if project is not None:
-            raw_default = project.get("default_duration")
-            if isinstance(raw_default, int):
-                default_duration = raw_default
-            elif isinstance(raw_default, str) and raw_default.strip().isdigit():
-                default_duration = int(raw_default.strip())
+            default_duration = normalize_project_default_duration(project)
+            ct = project.get("content_type")
+            if isinstance(ct, str) and ct:
+                content_type = ct
+            workflow_preset = get_workflow_preset(content_type)
             cm = project.get("content_mode")
             if isinstance(cm, str) and cm:
                 content_mode = cm
             gm = project.get("generation_mode")
             if isinstance(gm, str) and gm:
                 generation_mode = gm
+            if workflow_preset is not None:
+                content_mode = workflow_preset.content_mode
+                generation_mode = generation_mode or workflow_preset.generation_mode
+                default_duration = default_duration or workflow_preset.default_duration
 
         return {
             "provider_id": provider_id,
@@ -317,6 +351,7 @@ class ConfigResolver:
             "max_reference_images": max_reference_images,
             "source": source,
             "default_duration": default_duration,
+            "content_type": content_type,
             "content_mode": content_mode,
             "generation_mode": generation_mode,
         }
@@ -334,7 +369,7 @@ class ConfigResolver:
         provider_id: str,
     ) -> dict[str, str]:
         config = await svc.get_provider_config(provider_id)
-        cred_repo = CredentialRepository(session)
+        cred_repo = CredentialRepository(session, user_id=self._effective_user_id)
         active = await cred_repo.get_active(provider_id)
         if active:
             active.overlay_config(config)
@@ -346,7 +381,7 @@ class ConfigResolver:
         session: AsyncSession,
     ) -> dict[str, dict[str, str]]:
         configs = await svc.get_all_provider_configs()
-        cred_repo = CredentialRepository(session)
+        cred_repo = CredentialRepository(session, user_id=self._effective_user_id)
         active_creds = await cred_repo.get_active_credentials_bulk()
         for provider_id, cred in active_creds.items():
             cfg = configs.setdefault(provider_id, {})
@@ -374,11 +409,33 @@ class ConfigResolver:
         task_type: TextTaskType,
         project_name: str | None,
     ) -> tuple[str, str]:
+        project = self._project_manager().load_project(project_name) if project_name else None
+        return await self._resolve_text_backend_from_project(svc, session, task_type, project)
+
+    async def text_backend_for_task_from_project(
+        self,
+        task_type: TextTaskType,
+        project: dict | None,
+    ) -> tuple[str, str]:
+        """Resolve text backend using an already-loaded project.
+
+        This lets callers read project.json from the owning user namespace while
+        still using this resolver's user_id for global settings and credentials.
+        """
+        async with self._open_session() as (session, svc):
+            return await self._resolve_text_backend_from_project(svc, session, task_type, project)
+
+    async def _resolve_text_backend_from_project(
+        self,
+        svc: ConfigService,
+        session: AsyncSession,
+        task_type: TextTaskType,
+        project: dict | None,
+    ) -> tuple[str, str]:
         setting_key = _TEXT_TASK_SETTING_KEYS[task_type]
 
         # 1. Project-level task override
-        if project_name:
-            project = get_project_manager().load_project(project_name)
+        if project is not None:
             project_val = project.get(setting_key)
             if project_val and "/" in str(project_val):
                 return ConfigService._parse_backend(str(project_val), _DEFAULT_TEXT_BACKEND)
@@ -416,7 +473,7 @@ class ConfigResolver:
         from lib.custom_provider import make_provider_id
         from lib.db.repositories.custom_provider_repo import CustomProviderRepository
 
-        repo = CustomProviderRepository(session)
+        repo = CustomProviderRepository(session, user_id=self._effective_user_id)
         custom_models = await repo.list_enabled_models_by_media_type(media_type)
         for model in custom_models:
             if model.is_default:

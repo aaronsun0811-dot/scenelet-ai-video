@@ -4,7 +4,9 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from lib.db import get_async_session
 from server.auth import CurrentUserInfo, get_current_user
+from server.dependencies import get_config_service
 from server.routers import projects
 
 
@@ -17,9 +19,26 @@ class _FakePM:
                 "style": "Anime",
                 "episodes": [{"episode": 1, "script_file": "scripts/episode_1.json"}],
                 "overview": {"synopsis": "old"},
+                "characters": {},
             },
             "broken": {
                 "title": "Broken",
+                "style": "",
+                "episodes": [],
+            },
+            "other": {
+                "title": "Other",
+                "style": "",
+                "owner_user_id": "user-b",
+                "episodes": [],
+            },
+            "remove-me": {
+                "title": "Remove Me",
+                "style": "",
+                "episodes": [],
+            },
+            "bad": {
+                "title": "Bad",
                 "style": "",
                 "episodes": [],
             },
@@ -35,17 +54,20 @@ class _FakePM:
             },
         }
         self.created = set()
+        self.synced_scripts = []
         self.generated_names = ["project-aa11bb22", "project-cc33dd44"]
         (self.base / "ready" / "storyboards").mkdir(parents=True, exist_ok=True)
         (self.base / "ready" / "storyboards" / "scene_E1S01.png").write_bytes(b"png")
+        (self.base / "other").mkdir(parents=True, exist_ok=True)
+        (self.base / "bad").mkdir(parents=True, exist_ok=True)
         (self.base / "empty").mkdir(parents=True, exist_ok=True)
         (self.base / "remove-me").mkdir(parents=True, exist_ok=True)
 
     def list_projects(self):
-        return ["ready", "empty", "broken"]
+        return ["ready", "empty", "broken", "other"]
 
     def project_exists(self, name):
-        return name in {"ready", "broken"}
+        return name in {"ready", "broken", "other", "remove-me", "bad"}
 
     def load_project(self, name):
         if name == "broken":
@@ -115,9 +137,63 @@ class _FakePM:
     def save_script(self, name, payload, script_file):
         self.scripts[(name, script_file)] = payload
 
-    async def generate_overview(self, name):
+    def sync_episode_from_script(self, name, script_filename):
+        self.synced_scripts.append((name, script_filename))
+        script = self.load_script(name, script_filename)
+        project = self.project_data[name]
+        episodes = project.setdefault("episodes", [])
+        episode_no = script.get("episode", 1)
+        existing = next((ep for ep in episodes if ep.get("episode") == episode_no), None)
+        if existing is None:
+            episodes.append({
+                "episode": episode_no,
+                "title": script.get("title", f"第 {episode_no} 集"),
+                "script_file": f"scripts/{script_filename}",
+            })
+        else:
+            existing["title"] = script.get("title", existing.get("title", f"第 {episode_no} 集"))
+            existing["script_file"] = f"scripts/{script_filename}"
+        return script
+
+    async def generate_overview(self, name, *, user_id="default"):
         if name == "ready":
             return {"synopsis": "generated"}
+        raise ValueError("source missing")
+
+    async def generate_characters(self, name, *, user_id="default"):
+        if name == "ready":
+            characters = self.project_data[name].setdefault("characters", {})
+            characters["Hero"] = {"description": "hero", "voice_style": "calm", "character_sheet": ""}
+            return {"characters": characters, "source": "source", "added": 1, "updated": 0, "skipped": 0}
+        raise ValueError("source missing")
+
+    async def generate_scenes(self, name, *, user_id="default"):
+        if name == "ready":
+            scenes = self.project_data[name].setdefault("scenes", {})
+            scenes["Office"] = {"description": "office", "scene_sheet": ""}
+            return {"scenes": scenes, "source": "source", "added": 1, "updated": 0, "skipped": 0}
+        raise ValueError("source missing")
+
+    async def generate_props(self, name, *, user_id="default"):
+        if name == "ready":
+            props = self.project_data[name].setdefault("props", {})
+            props["Contract"] = {"description": "contract", "prop_sheet": ""}
+            return {"props": props, "source": "source", "added": 1, "updated": 0, "skipped": 0}
+        raise ValueError("source missing")
+
+    async def generate_episode_draft(self, name, episode=1, *, user_id="default"):
+        if name == "ready":
+            episodes = self.project_data[name].setdefault("episodes", [])
+            if not any(ep.get("episode") == episode for ep in episodes):
+                episodes.append({"episode": episode, "title": f"第 {episode} 集", "script_file": f"scripts/episode_{episode}.json"})
+            return {
+                "episode": episode,
+                "title": f"第 {episode} 集",
+                "script_file": f"scripts/episode_{episode}.json",
+                "draft_path": f"drafts/episode_{episode}/step1_segments.md",
+                "content": "# draft",
+                "source": "source",
+            }
         raise ValueError("source missing")
 
 
@@ -148,12 +224,21 @@ class _FakeCalc:
         return script
 
 
-def _client(monkeypatch, fake_pm, fake_calc):
+def _client(monkeypatch, fake_pm, fake_calc, *, user_id: str = "default", google_maps_api_key: str = ""):
     monkeypatch.setattr(projects, "get_project_manager", lambda: fake_pm)
     monkeypatch.setattr(projects, "get_status_calculator", lambda: fake_calc)
 
     app = FastAPI()
-    app.dependency_overrides[get_current_user] = lambda: CurrentUserInfo(id="default", sub="testuser", role="admin")
+    app.dependency_overrides[get_current_user] = lambda: CurrentUserInfo(id=user_id, sub=user_id, role="admin")
+    app.dependency_overrides[get_async_session] = lambda: None
+
+    class _FakeConfigService:
+        async def get_setting(self, key, default=""):
+            if key == "google_maps_api_key":
+                return google_maps_api_key
+            return default
+
+    app.dependency_overrides[get_config_service] = lambda: _FakeConfigService()
     app.include_router(projects.router, prefix="/api/v1")
     return TestClient(app)
 
@@ -207,6 +292,73 @@ class TestProjectsRouter:
             delete_ok = client.delete("/api/v1/projects/remove-me")
             assert delete_ok.status_code == 200
 
+    def test_project_list_and_detail_are_user_scoped(self, tmp_path, monkeypatch):
+        client = _client(monkeypatch, _FakePM(tmp_path), _FakeCalc(), user_id="user-b")
+
+        with client:
+            listed = client.get("/api/v1/projects")
+            assert listed.status_code == 200
+            assert [p["name"] for p in listed.json()["projects"]] == ["other"]
+
+            own_detail = client.get("/api/v1/projects/other")
+            assert own_detail.status_code == 200
+            assert own_detail.json()["project"]["title"] == "Other"
+
+            other_detail = client.get("/api/v1/projects/ready")
+            assert other_detail.status_code == 404
+
+    def test_project_member_management_grants_shared_access(self, tmp_path, monkeypatch):
+        fake_pm = _FakePM(tmp_path)
+        owner_client = _client(monkeypatch, fake_pm, _FakeCalc())
+
+        async def _resolve_member(req, _session):
+            return "user-c", "carol"
+
+        monkeypatch.setattr(projects, "_resolve_member_identity", _resolve_member)
+
+        with owner_client:
+            members = owner_client.get("/api/v1/projects/ready/members")
+            assert members.status_code == 200
+            assert members.json()["owner_user_id"] == "default"
+            assert members.json()["members"] == []
+
+            grant = owner_client.put(
+                "/api/v1/projects/ready/members/user-c",
+                json={"user_id": "user-c", "role": "editor"},
+            )
+            assert grant.status_code == 200
+            assert grant.json()["members"][0]["user_id"] == "user-c"
+            assert grant.json()["members"][0]["role"] == "editor"
+
+            grant_by_username = owner_client.post(
+                "/api/v1/projects/ready/members",
+                json={"identifier": "carol", "role": "editor"},
+            )
+            assert grant_by_username.status_code == 200
+            assert grant_by_username.json()["members"][0]["username"] == "carol"
+
+            member_client = _client(monkeypatch, fake_pm, _FakeCalc(), user_id="user-c")
+            with member_client:
+                listed = member_client.get("/api/v1/projects")
+                assert listed.status_code == 200
+                assert [p["name"] for p in listed.json()["projects"]] == ["ready"]
+                assert listed.json()["projects"][0]["owner_user_id"] == "default"
+                assert listed.json()["projects"][0]["current_user_role"] == "editor"
+
+                detail = member_client.get("/api/v1/projects/ready")
+                assert detail.status_code == 200
+                assert detail.json()["project"]["title"] == "Ready"
+
+                delete_by_member = member_client.delete("/api/v1/projects/ready")
+                assert delete_by_member.status_code == 403
+
+                revoke_by_member = member_client.delete("/api/v1/projects/ready/members/user-c")
+                assert revoke_by_member.status_code == 403
+
+            revoke = owner_client.delete("/api/v1/projects/ready/members/user-c")
+            assert revoke.status_code == 200
+            assert revoke.json()["members"] == []
+
     def test_project_details_and_updates(self, tmp_path, monkeypatch):
         fake_pm = _FakePM(tmp_path)
         client = _client(monkeypatch, fake_pm, _FakeCalc())
@@ -247,6 +399,53 @@ class TestProjectsRouter:
             )
             assert updated_ratio.status_code == 200
             assert updated_ratio.json()["project"]["aspect_ratio"] == "16:9"
+
+            invalid_generation_mode = client.patch(
+                "/api/v1/projects/ready",
+                json={"generation_mode": "surprise-me"},
+            )
+            assert invalid_generation_mode.status_code == 400
+            assert fake_pm.project_data["ready"].get("generation_mode") != "surprise-me"
+
+            legacy_generation_mode = client.patch(
+                "/api/v1/projects/ready",
+                json={"generation_mode": "single"},
+            )
+            assert legacy_generation_mode.status_code == 200
+            assert legacy_generation_mode.json()["project"]["generation_mode"] == "storyboard"
+
+            updated_duration = client.patch(
+                "/api/v1/projects/ready",
+                json={"default_duration": 8},
+            )
+            assert updated_duration.status_code == 200
+            assert updated_duration.json()["project"]["default_duration"] == 8
+            assert updated_duration.json()["project"]["default_duration_explicit"] is True
+
+            cleared_duration = client.patch(
+                "/api/v1/projects/ready",
+                json={"default_duration": None},
+            )
+            assert cleared_duration.status_code == 200
+            assert "default_duration" not in cleared_duration.json()["project"]
+            assert "default_duration_explicit" not in cleared_duration.json()["project"]
+
+            updated_character_style = client.patch(
+                "/api/v1/projects/ready",
+                json={"character_style_prompt": "真人短剧质感，五官清晰自然"},
+            )
+            assert updated_character_style.status_code == 200
+            assert (
+                updated_character_style.json()["project"]["character_style_prompt"]
+                == "真人短剧质感，五官清晰自然"
+            )
+
+            cleared_character_style = client.patch(
+                "/api/v1/projects/ready",
+                json={"character_style_prompt": None},
+            )
+            assert cleared_character_style.status_code == 200
+            assert "character_style_prompt" not in cleared_character_style.json()["project"]
 
             get_script = client.get("/api/v1/projects/ready/scripts/episode_1.json")
             assert get_script.status_code == 200
@@ -301,6 +500,68 @@ class TestProjectsRouter:
 
             gen_overview_ok = client.post("/api/v1/projects/ready/generate-overview")
             assert gen_overview_ok.status_code == 200
+
+            gen_characters_ok = client.post("/api/v1/projects/ready/generate-characters")
+            assert gen_characters_ok.status_code == 200
+            assert gen_characters_ok.json()["added"] == 1
+            assert "Hero" in gen_characters_ok.json()["characters"]
+
+            gen_scenes_ok = client.post("/api/v1/projects/ready/generate-scenes")
+            assert gen_scenes_ok.status_code == 200
+            assert gen_scenes_ok.json()["added"] == 1
+            assert "Office" in gen_scenes_ok.json()["scenes"]
+
+            gen_props_ok = client.post("/api/v1/projects/ready/generate-props")
+            assert gen_props_ok.status_code == 200
+            assert gen_props_ok.json()["added"] == 1
+            assert "Contract" in gen_props_ok.json()["props"]
+
+            gen_draft_ok = client.post("/api/v1/projects/ready/generate-episode-draft", json={"episode": 1})
+            assert gen_draft_ok.status_code == 200
+            assert gen_draft_ok.json()["draft_path"].startswith("drafts/episode_1/")
+
+    def test_generate_episode_script_from_draft(self, tmp_path, monkeypatch):
+        fake_pm = _FakePM(tmp_path)
+
+        class _FakeScriptGenerator:
+            @classmethod
+            async def create(cls, project_path, *, user_id="default"):
+                assert project_path == tmp_path / "ready"
+                assert user_id == "default"
+                return cls()
+
+            async def generate(self, episode):
+                assert episode == 1
+                return tmp_path / "ready" / "scripts" / "episode_1.json"
+
+        monkeypatch.setattr(projects, "ScriptGenerator", _FakeScriptGenerator)
+        client = _client(monkeypatch, fake_pm, _FakeCalc())
+
+        with client:
+            resp = client.post("/api/v1/projects/ready/generate-episode-script", json={"episode": 1})
+
+        assert resp.status_code == 200
+        assert resp.json()["script_file"] == "scripts/episode_1.json"
+        assert resp.json()["script"]["scenes"][0]["scene_id"] == "001"
+        assert fake_pm.synced_scripts == [("ready", "episode_1.json")]
+
+    def test_generate_episode_script_requires_step1_draft(self, tmp_path, monkeypatch):
+        class _FailingScriptGenerator:
+            @classmethod
+            async def create(cls, project_path, *, user_id="default"):
+                return cls()
+
+            async def generate(self, episode):
+                raise FileNotFoundError("未找到 Step 1 文件")
+
+        monkeypatch.setattr(projects, "ScriptGenerator", _FailingScriptGenerator)
+        client = _client(monkeypatch, _FakePM(tmp_path), _FakeCalc())
+
+        with client:
+            resp = client.post("/api/v1/projects/ready/generate-episode-script", json={"episode": 1})
+
+        assert resp.status_code == 400
+        assert "Step 1" in resp.json()["detail"]
 
     def test_update_segment_writes_character_and_clue_refs(self, tmp_path, monkeypatch):
         fake_pm = _FakePM(tmp_path)
@@ -386,6 +647,18 @@ class TestProjectsRouter:
             gen_overview_bad = client.post("/api/v1/projects/bad/generate-overview")
             assert gen_overview_bad.status_code == 400
 
+            gen_characters_bad = client.post("/api/v1/projects/bad/generate-characters")
+            assert gen_characters_bad.status_code == 400
+
+            gen_scenes_bad = client.post("/api/v1/projects/bad/generate-scenes")
+            assert gen_scenes_bad.status_code == 400
+
+            gen_props_bad = client.post("/api/v1/projects/bad/generate-props")
+            assert gen_props_bad.status_code == 400
+
+            gen_draft_bad = client.post("/api/v1/projects/bad/generate-episode-draft", json={"episode": 1})
+            assert gen_draft_bad.status_code == 400
+
             update_overview = client.patch(
                 "/api/v1/projects/ready/overview",
                 json={"synopsis": "new synopsis", "genre": "悬疑", "theme": "真相", "world_setting": "古代"},
@@ -426,6 +699,293 @@ class TestProjectsRouter:
             assert data["style_template_id"] == "live_premium_drama"
             assert "真人电视剧" in data["style"] or "精品短剧" in data["style"]
 
+    def test_create_project_with_content_style_template_id_expands_prompt(self, tmp_path, monkeypatch):
+        fake_pm = _FakePM(tmp_path)
+        client = _client(monkeypatch, fake_pm, _FakeCalc())
+
+        with client:
+            resp = client.post(
+                "/api/v1/projects",
+                json={
+                    "title": "情景剧项目",
+                    "name": "content-tpl-1",
+                    "style_template_id": "content_scene_sketch",
+                    "content_type": "scene_sketch",
+                },
+            )
+            assert resp.status_code == 200
+            data = fake_pm.project_data["content-tpl-1"]
+            assert data["style_template_id"] == "content_scene_sketch"
+            assert "情景剧" in data["style"]
+            assert data["content_type"] == "scene_sketch"
+            assert data["content_mode"] == "drama"
+            assert data["aspect_ratio"] == "16:9"
+            assert data["generation_mode"] == "storyboard"
+
+    def test_create_project_with_content_type_applies_workflow_defaults(self, tmp_path, monkeypatch):
+        fake_pm = _FakePM(tmp_path)
+        client = _client(monkeypatch, fake_pm, _FakeCalc())
+
+        with client:
+            resp = client.post(
+                "/api/v1/projects",
+                json={
+                    "title": "广告项目",
+                    "name": "ad-workflow-1",
+                    "content_type": "ad_story",
+                },
+            )
+            assert resp.status_code == 200
+            data = fake_pm.project_data["ad-workflow-1"]
+            assert data["content_type"] == "ad_story"
+            assert data["content_mode"] == "drama"
+            assert data["aspect_ratio"] == "9:16"
+            assert data["generation_mode"] == "reference_video"
+            assert data["default_duration"] == 8
+            assert data["default_duration_explicit"] is True
+            assert data["style_template_id"] == "content_ad_story"
+            assert "广告剧情" in data["style"]
+
+    def test_create_travel_video_project_persists_route_settings_and_portrait_override(self, tmp_path, monkeypatch):
+        fake_pm = _FakePM(tmp_path)
+        client = _client(monkeypatch, fake_pm, _FakeCalc())
+
+        with client:
+            resp = client.post(
+                "/api/v1/projects",
+                json={
+                    "title": "大阪路线",
+                    "name": "travel-workflow-1",
+                    "content_type": "travel_video",
+                    "aspect_ratio": "9:16",
+                    "travel_video_settings": {
+                        "origin": " 难波站 ",
+                        "destination": "黑门市场",
+                        "route_source": "manual",
+                        "route_notes": "沿千日前通前进",
+                        "narration_language": "zh",
+                        "target_duration": "custom",
+                        "custom_duration_seconds": 240,
+                        "camera_style": "street_walk_turns",
+                        "narrator_persona": "enthusiastic_guide",
+                    },
+                },
+            )
+            assert resp.status_code == 200
+            data = fake_pm.project_data["travel-workflow-1"]
+            assert data["content_type"] == "travel_video"
+            assert data["content_mode"] == "narration"
+            assert data["aspect_ratio"] == "9:16"
+            assert data["generation_mode"] == "reference_video"
+            assert data["default_duration"] == 8
+            assert data["style_template_id"] == "content_travel_video"
+            assert data["travel_video_settings"]["origin"] == "难波站"
+            assert data["travel_video_settings"]["route_source"] == "manual"
+            assert data["travel_video_settings"]["target_duration"] == "custom"
+            assert data["travel_video_settings"]["custom_duration_seconds"] == 240
+            assert data["travel_video_settings"]["narration_language"] == "zh"
+
+    def test_create_travel_video_project_applies_route_defaults(self, tmp_path, monkeypatch):
+        fake_pm = _FakePM(tmp_path)
+        client = _client(monkeypatch, fake_pm, _FakeCalc())
+
+        with client:
+            resp = client.post(
+                "/api/v1/projects",
+                json={
+                    "title": "默认路线",
+                    "name": "travel-defaults",
+                    "content_type": "travel_video",
+                },
+            )
+            assert resp.status_code == 200
+            data = fake_pm.project_data["travel-defaults"]
+            assert data["aspect_ratio"] == "16:9"
+            assert data["generation_mode"] == "reference_video"
+            assert data["travel_video_settings"] == {
+                "route_source": "google_street_view",
+                "narration_language": "auto",
+                "target_duration": "45s",
+                "camera_style": "street_walk_turns",
+                "narrator_persona": "enthusiastic_guide",
+            }
+
+    def test_preview_travel_route_persists_manual_fallback_when_google_key_missing(self, tmp_path, monkeypatch):
+        fake_pm = _FakePM(tmp_path)
+        fake_pm.project_data["ready"]["content_type"] = "travel_video"
+        client = _client(monkeypatch, fake_pm, _FakeCalc())
+
+        with client:
+            resp = client.post(
+                "/api/v1/projects/ready/travel-route/preview",
+                json={
+                    "travel_video_settings": {
+                        "origin": "大阪难波站",
+                        "destination": "黑门市场",
+                        "route_source": "google_street_view",
+                        "route_notes": "沿千日前通前进，看到商店街后右转。",
+                    }
+                },
+            )
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["source"] == "manual"
+        assert body["google_configured"] is False
+        assert body["route_ready"] is True
+        assert body["warnings"][0]["code"] == "google_maps_optional_missing"
+        saved = fake_pm.project_data["ready"]["travel_video_settings"]
+        assert saved["route_preview"]["source"] == "manual"
+        assert saved["route_preview"]["nodes"][0]["label"] == "出发地"
+
+    def test_get_travel_route_street_view_image_proxies_persisted_google_node(self, tmp_path, monkeypatch):
+        fake_pm = _FakePM(tmp_path)
+        fake_pm.project_data["ready"]["content_type"] = "travel_video"
+        fake_pm.project_data["ready"]["travel_video_settings"] = {
+            "route_preview": {
+                "nodes": [
+                    {
+                        "id": "google-step-1",
+                        "source": "google",
+                        "pano_id": "pano-demo",
+                        "heading": 18.0,
+                    }
+                ]
+            }
+        }
+
+        async def _fake_fetch(node, *, google_maps_api_key, http_client):
+            assert node["pano_id"] == "pano-demo"
+            assert google_maps_api_key == "AIza-demo"
+            return b"jpeg-bytes", "image/jpeg"
+
+        monkeypatch.setattr(projects, "fetch_travel_route_street_view_image", _fake_fetch)
+        client = _client(monkeypatch, fake_pm, _FakeCalc(), google_maps_api_key="AIza-demo")
+
+        with client:
+            resp = client.get("/api/v1/projects/ready/travel-route/street-view/google-step-1")
+
+        assert resp.status_code == 200, resp.text
+        assert resp.content == b"jpeg-bytes"
+        assert resp.headers["content-type"] == "image/jpeg"
+
+    def test_create_project_with_content_type_controls_content_mode(self, tmp_path, monkeypatch):
+        fake_pm = _FakePM(tmp_path)
+        client = _client(monkeypatch, fake_pm, _FakeCalc())
+
+        with client:
+            resp = client.post(
+                "/api/v1/projects",
+                json={
+                    "title": "情景剧项目",
+                    "name": "scene-mode-lock",
+                    "content_type": "scene_sketch",
+                    "content_mode": "narration",
+                },
+            )
+            assert resp.status_code == 200
+            data = fake_pm.project_data["scene-mode-lock"]
+            assert data["content_type"] == "scene_sketch"
+            assert data["content_mode"] == "drama"
+
+    def test_create_project_explicit_null_style_template_keeps_no_template(self, tmp_path, monkeypatch):
+        fake_pm = _FakePM(tmp_path)
+        client = _client(monkeypatch, fake_pm, _FakeCalc())
+
+        with client:
+            resp = client.post(
+                "/api/v1/projects",
+                json={
+                    "title": "自定义风格",
+                    "name": "custom-style-project",
+                    "content_type": "short_drama",
+                    "style_template_id": None,
+                },
+            )
+            assert resp.status_code == 200
+            data = fake_pm.project_data["custom-style-project"]
+            assert "style_template_id" not in data
+            assert data["style"] == ""
+
+    def test_create_project_with_unknown_content_type_returns_400(self, tmp_path, monkeypatch):
+        fake_pm = _FakePM(tmp_path)
+        client = _client(monkeypatch, fake_pm, _FakeCalc())
+
+        with client:
+            resp = client.post(
+                "/api/v1/projects",
+                json={
+                    "title": "坏类型",
+                    "name": "bad-content-type",
+                    "content_type": "unknown-kind",
+                },
+            )
+            assert resp.status_code == 400
+
+    def test_create_project_with_invalid_content_mode_returns_400(self, tmp_path, monkeypatch):
+        fake_pm = _FakePM(tmp_path)
+        client = _client(monkeypatch, fake_pm, _FakeCalc())
+
+        with client:
+            resp = client.post(
+                "/api/v1/projects",
+                json={
+                    "title": "坏内容模式",
+                    "name": "bad-content-mode",
+                    "content_mode": "reference_video",
+                },
+            )
+            assert resp.status_code == 400
+            assert "bad-content-mode" not in fake_pm.project_data
+
+    def test_create_project_with_invalid_generation_mode_returns_400(self, tmp_path, monkeypatch):
+        fake_pm = _FakePM(tmp_path)
+        client = _client(monkeypatch, fake_pm, _FakeCalc())
+
+        with client:
+            resp = client.post(
+                "/api/v1/projects",
+                json={
+                    "title": "坏生成模式",
+                    "name": "bad-generation-mode",
+                    "generation_mode": "surprise-me",
+                },
+            )
+            assert resp.status_code == 400
+            assert "bad-generation-mode" not in fake_pm.project_data
+
+    def test_create_project_normalizes_legacy_generation_mode(self, tmp_path, monkeypatch):
+        fake_pm = _FakePM(tmp_path)
+        client = _client(monkeypatch, fake_pm, _FakeCalc())
+
+        with client:
+            resp = client.post(
+                "/api/v1/projects",
+                json={
+                    "title": "旧模式项目",
+                    "name": "legacy-generation-mode",
+                    "generation_mode": "single",
+                },
+            )
+            assert resp.status_code == 200
+            assert fake_pm.project_data["legacy-generation-mode"]["generation_mode"] == "storyboard"
+
+    def test_update_project_content_type_applies_workflow_defaults(self, tmp_path, monkeypatch):
+        fake_pm = _FakePM(tmp_path)
+        client = _client(monkeypatch, fake_pm, _FakeCalc())
+
+        with client:
+            resp = client.patch(
+                "/api/v1/projects/ready",
+                json={"content_type": "ad_story"},
+            )
+            assert resp.status_code == 200
+            data = fake_pm.project_data["ready"]
+            assert data["content_type"] == "ad_story"
+            assert data["content_mode"] == "drama"
+            assert data["aspect_ratio"] == "9:16"
+            assert data["generation_mode"] == "reference_video"
+
     def test_create_project_with_unknown_template_id_returns_400(self, tmp_path, monkeypatch):
         fake_pm = _FakePM(tmp_path)
         client = _client(monkeypatch, fake_pm, _FakeCalc())
@@ -463,6 +1023,7 @@ class TestProjectsRouter:
             assert data["image_backend"] == "gemini-aistudio/nano-banana"
             assert data["text_backend_script"] == "gemini-aistudio/gemini-2.5"
             assert data["default_duration"] == 8
+            assert data["default_duration_explicit"] is True
 
     def test_create_project_empty_model_fields_not_written(self, tmp_path, monkeypatch):
         fake_pm = _FakePM(tmp_path)
@@ -605,6 +1166,26 @@ class TestProjectsRouter:
             ready = [p for p in resp.json()["projects"] if p["name"] == "ready"][0]
             assert ready["style_image"] == "style_reference.png"
             assert ready.get("style_template_id") is None
+
+    def test_list_projects_returns_travel_video_settings(self, tmp_path, monkeypatch):
+        fake_pm = _FakePM(tmp_path)
+        fake_pm.project_data["ready"]["content_type"] = "travel_video"
+        fake_pm.project_data["ready"]["travel_video_settings"] = {
+            "origin": "难波站",
+            "destination": "黑门市场",
+            "route_source": "manual",
+            "target_duration": "60s",
+        }
+
+        client = _client(monkeypatch, fake_pm, _FakeCalc())
+        with client:
+            resp = client.get("/api/v1/projects")
+            assert resp.status_code == 200
+            ready = [p for p in resp.json()["projects"] if p["name"] == "ready"][0]
+            assert ready["content_type"] == "travel_video"
+            assert ready["travel_video_settings"]["origin"] == "难波站"
+            assert ready["travel_video_settings"]["destination"] == "黑门市场"
+            assert ready["travel_video_settings"]["route_source"] == "manual"
 
     def test_update_project_clear_style_combined(self, tmp_path, monkeypatch):
         """一次性清空所有风格：style_template_id=null + clear_style_image=true。"""
@@ -753,7 +1334,7 @@ class TestGetVideoCapabilities:
             resolver_instance.video_capabilities = AsyncMock(side_effect=side_effect)
         else:
             resolver_instance.video_capabilities = AsyncMock(return_value=return_value)
-        monkeypatch.setattr(projects, "ConfigResolver", lambda _factory: resolver_instance)
+        monkeypatch.setattr(projects, "ConfigResolver", lambda _factory, **_kwargs: resolver_instance)
         return resolver_instance
 
     def test_returns_capabilities_json(self, tmp_path, monkeypatch):

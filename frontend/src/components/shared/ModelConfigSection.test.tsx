@@ -96,6 +96,23 @@ describe("ModelConfigSection", () => {
     await user.click(comboboxes[0]);
   });
 
+  it("shows setup hints instead of empty model selectors when no providers are configured", () => {
+    render(
+      <ModelConfigSection
+        value={EMPTY_VALUE}
+        onChange={() => {}}
+        providers={[]}
+        options={{ videoBackends: [], imageBackends: [], textBackends: [], providerNames: {} }}
+        globalDefaults={{ video: "", image: "", textScript: "", textOverview: "", textStyle: "" }}
+      />,
+    );
+
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    expect(screen.getByText(/暂无可用视频模型/)).toBeInTheDocument();
+    expect(screen.getByText(/暂无可用图片模型/)).toBeInTheDocument();
+    expect(screen.getByText(/暂无可用文本模型/)).toBeInTheDocument();
+  });
+
   it("renders duration buttons based on supported_durations of current video backend", () => {
     const { rerender } = render(
       <ModelConfigSection

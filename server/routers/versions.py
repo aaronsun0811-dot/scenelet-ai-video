@@ -14,11 +14,13 @@ from fastapi import APIRouter, HTTPException
 logger = logging.getLogger(__name__)
 
 from lib import PROJECT_ROOT
+from lib.db.base import DEFAULT_USER_ID
 from lib.i18n import Translator
 from lib.project_change_hints import project_change_source
 from lib.project_manager import ProjectManager
 from lib.version_manager import VersionManager
 from server.auth import CurrentUser
+from server.services.project_access import load_project_for_user, project_manager_for_user
 
 router = APIRouter()
 
@@ -38,10 +40,29 @@ def get_project_manager() -> ProjectManager:
     return pm
 
 
-def get_version_manager(project_name: str) -> VersionManager:
+def get_project_manager_for_user(user_id: str | None) -> ProjectManager:
+    return project_manager_for_user(get_project_manager(), user_id)
+
+
+def get_version_manager(project_name: str, user_id: str | None = None) -> VersionManager:
     """获取项目的版本管理器"""
-    project_path = get_project_manager().get_project_path(project_name)
+    project_path = get_project_manager_for_user(user_id).get_project_path(project_name)
     return VersionManager(project_path)
+
+
+def _get_version_manager_for_user(project_name: str, user_id: str | None) -> VersionManager:
+    try:
+        return get_version_manager(project_name, user_id)
+    except TypeError:
+        return get_version_manager(project_name)  # type: ignore[misc]
+
+
+def _current_user_id(user: CurrentUser) -> str:
+    if hasattr(user, "id"):
+        return str(user.id)
+    if isinstance(user, dict) and user.get("id"):
+        return str(user["id"])
+    return DEFAULT_USER_ID
 
 
 def _resolve_resource_path(
@@ -60,6 +81,7 @@ def _resolve_resource_path(
 
 
 def _sync_storyboard_metadata(
+    manager: ProjectManager,
     project_name: str,
     resource_id: str,
     file_path: str,
@@ -71,7 +93,7 @@ def _sync_storyboard_metadata(
     for script_file in scripts_dir.glob("*.json"):
         try:
             with project_change_source("webui"):
-                get_project_manager().update_scene_asset(
+                manager.update_scene_asset(
                     project_name=project_name,
                     script_filename=script_file.name,
                     scene_id=resource_id,
@@ -94,6 +116,7 @@ _RESOURCE_TO_ASSET_TYPE: dict[str, str] = {
 
 
 def _sync_metadata(
+    manager: ProjectManager,
     resource_type: str,
     project_name: str,
     resource_id: str,
@@ -105,11 +128,11 @@ def _sync_metadata(
     if asset_type is not None:
         try:
             with project_change_source("webui"):
-                get_project_manager()._update_asset_sheet(asset_type, project_name, resource_id, file_path)
+                manager._update_asset_sheet(asset_type, project_name, resource_id, file_path)
         except KeyError:
             pass  # 资产条目可能已从 project.json 删除，跳过元数据同步
     elif resource_type == "storyboards":
-        _sync_storyboard_metadata(project_name, resource_id, file_path, project_path)
+        _sync_storyboard_metadata(manager, project_name, resource_id, file_path, project_path)
 
 
 # ==================== 版本查询 ====================
@@ -121,6 +144,7 @@ async def get_versions(
     resource_type: str,
     resource_id: str,
     _user: CurrentUser,
+    _t: Translator,
 ):
     """
     获取资源的所有版本列表
@@ -133,7 +157,9 @@ async def get_versions(
     try:
 
         def _sync():
-            vm = get_version_manager(project_name)
+            user_id = _current_user_id(_user)
+            load_project_for_user(get_project_manager(), project_name, user_id=user_id, translate=_t)
+            vm = _get_version_manager_for_user(project_name, user_id)
             versions_info = vm.get_versions(resource_type, resource_id)
             return {"resource_type": resource_type, "resource_id": resource_id, **versions_info}
 
@@ -143,6 +169,8 @@ async def get_versions(
         raise HTTPException(status_code=400, detail=str(e))
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("请求处理失败")
         raise HTTPException(status_code=500, detail=str(e))
@@ -174,8 +202,11 @@ async def restore_version(
     try:
 
         def _sync():
-            vm = get_version_manager(project_name)
-            project_path = get_project_manager().get_project_path(project_name)
+            user_id = _current_user_id(_user)
+            manager = get_project_manager_for_user(user_id)
+            load_project_for_user(get_project_manager(), project_name, user_id=user_id, translate=_t)
+            vm = _get_version_manager_for_user(project_name, user_id)
+            project_path = manager.get_project_path(project_name)
             current_file, file_path = _resolve_resource_path(resource_type, resource_id, project_path, _t)
 
             result = vm.restore_version(
@@ -185,7 +216,7 @@ async def restore_version(
                 current_file=current_file,
             )
 
-            _sync_metadata(resource_type, project_name, resource_id, file_path, project_path)
+            _sync_metadata(manager, resource_type, project_name, resource_id, file_path, project_path)
 
             # 计算还原后文件的 fingerprint；视频还原时同步删除缩略图（内容已失效）
             asset_fingerprints: dict[str, int] = {}

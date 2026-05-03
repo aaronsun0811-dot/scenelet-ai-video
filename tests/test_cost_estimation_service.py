@@ -189,6 +189,38 @@ class TestCostEstimationService:
         for seg in segments[3:]:
             assert seg["actual"]["image"] == {}
 
+    async def test_content_type_controls_missing_aspect_ratio_for_grid_layout(self, db_factory, monkeypatch):
+        resolver = ConfigResolver(db_factory)
+        tracker = UsageTracker(session_factory=db_factory)
+        service = CostEstimationService(resolver, tracker)
+        captured_aspect_ratios: list[str] = []
+
+        class _Layout:
+            cell_count = 4
+
+        def fake_calculate_grid_layout(_count: int, aspect_ratio: str):
+            captured_aspect_ratios.append(aspect_ratio)
+            return _Layout()
+
+        monkeypatch.setattr(
+            "server.services.cost_estimation.calculate_grid_layout",
+            fake_calculate_grid_layout,
+        )
+
+        project_data = {
+            "title": "Test",
+            "content_type": "scene_sketch",
+            # Legacy inconsistent value: content_type should be authoritative.
+            "content_mode": "narration",
+            "generation_mode": "grid",
+            "episodes": [{"episode": 1, "title": "Ep1", "script_file": "ep1.json"}],
+        }
+        scripts = {"ep1.json": _make_script(1, ["E1S001", "E1S002", "E1S003"], [6, 6, 6])}
+
+        await service.compute(project_data, scripts, project_name="proj")
+
+        assert captured_aspect_ratios == ["16:9"]
+
     async def test_single_mode_unaffected_by_grid_logic(self, db_factory):
         """Single generation mode should be completely unaffected by grid apportionment."""
         resolver = ConfigResolver(db_factory)

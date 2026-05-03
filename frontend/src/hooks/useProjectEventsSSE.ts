@@ -33,17 +33,28 @@ const CHANGE_PRIORITY: Record<string, number> = {
   storyboard_ready: 7,
   video_ready: 8,
   grid_ready: 9,
+  reference_video_ready: 10,
 };
 
 function getChangePriority(change: ProjectChange): number {
-  if (change.action === "storyboard_ready" || change.action === "video_ready" || change.action === "grid_ready") {
+  if (
+    change.action === "storyboard_ready" ||
+    change.action === "video_ready" ||
+    change.action === "grid_ready" ||
+    change.action === "reference_video_ready"
+  ) {
     return CHANGE_PRIORITY[change.action] ?? Number.MAX_SAFE_INTEGER;
   }
   return CHANGE_PRIORITY[`${change.entity_type}:${change.action}`] ?? Number.MAX_SAFE_INTEGER;
 }
 
 function isNavigableChange(change: ProjectChange): boolean {
-  if (change.action === "storyboard_ready" || change.action === "video_ready" || change.action === "grid_ready") {
+  if (
+    change.action === "storyboard_ready" ||
+    change.action === "video_ready" ||
+    change.action === "grid_ready" ||
+    change.action === "reference_video_ready"
+  ) {
     return false;
   }
   return Boolean(change.focus?.anchor_type && change.focus?.anchor_id);
@@ -74,6 +85,32 @@ function buildNotificationTarget(change: ProjectChange): WorkspaceNotificationTa
   };
 }
 
+function buildGenerationNotificationTarget(
+  change: ProjectChange,
+): WorkspaceNotificationTarget | null {
+  const focusTarget = buildNotificationTarget(change);
+  if (focusTarget) return focusTarget;
+  if (typeof change.episode !== "number") return null;
+
+  if (change.action === "storyboard_ready" || change.action === "video_ready") {
+    return {
+      type: "segment",
+      id: change.entity_id,
+      route: `/episodes/${change.episode}`,
+      highlight_style: "flash",
+    };
+  }
+  if (change.action === "reference_video_ready") {
+    return {
+      type: "reference-unit",
+      id: change.entity_id,
+      route: `/episodes/${change.episode}`,
+      highlight_style: "flash",
+    };
+  }
+  return null;
+}
+
 function getGroupPriority(group: GroupedProjectChange): number {
   return Math.min(
     ...group.changes.map((change) => getChangePriority(change)),
@@ -98,6 +135,14 @@ function getPrimaryGroupTarget(
   const primaryChange =
     group.changes.find((change) => isNavigableChange(change)) ?? null;
   return primaryChange ? buildNotificationTarget(primaryChange) : null;
+}
+
+function getGenerationGroupTarget(
+  group: GroupedProjectChange,
+): WorkspaceNotificationTarget | null {
+  return group.changes
+    .map((change) => buildGenerationNotificationTarget(change))
+    .find((target): target is WorkspaceNotificationTarget => Boolean(target)) ?? null;
 }
 
 function isWorkspaceEditing(): boolean {
@@ -251,7 +296,12 @@ export function useProjectEventsSSE(projectName?: string | null): void {
               if (!hasImportantChanges(group)) {
                 continue;
               }
-              pushNotification(formatGroupedNotificationText(group), "success");
+              const target = getGenerationGroupTarget(group);
+              pushNotification(
+                formatGroupedNotificationText(group),
+                "success",
+                target ? { target } : undefined,
+              );
             }
           }
 

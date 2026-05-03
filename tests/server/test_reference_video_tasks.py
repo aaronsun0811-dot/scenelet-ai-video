@@ -8,9 +8,11 @@ import pytest
 
 from lib.reference_video.errors import MissingReferenceError, RequestPayloadTooLargeError
 from server.services.reference_video_tasks import (
+    _append_travel_reference_prompt_note,
     _apply_provider_constraints,
     _compress_references_to_tempfiles,
     _render_unit_prompt,
+    _resolve_travel_reference_images,
     _resolve_unit_references,
 )
 
@@ -105,6 +107,46 @@ def test_resolve_unit_references_unknown_name_raises(tmp_path: Path):
     with pytest.raises(MissingReferenceError) as excinfo:
         _resolve_unit_references(project, proj_dir, bad_refs)
     assert ("prop", "不存在的道具") in excinfo.value.missing
+
+
+def test_resolve_travel_reference_images_caps_filters_and_dedupes(tmp_path: Path):
+    proj_dir = _write_project(tmp_path)
+    ref_dir = proj_dir / "travel_references"
+    ref_dir.mkdir()
+    for index in range(12):
+        (ref_dir / f"ref-{index}.png").write_bytes(_make_png_bytes())
+
+    project = json.loads((proj_dir / "project.json").read_text(encoding="utf-8"))
+    project["content_type"] = "travel_video"
+    project["travel_video_settings"] = {
+        "reference_images": [
+            "travel_references/ref-0.png",
+            "travel_references/ref-1.png",
+            "../outside.png",
+            "travel_references/missing.png",
+        ],
+        "route_preview": {
+            "reference_images": [
+                "travel_references/ref-1.png",
+                *[f"travel_references/ref-{index}.png" for index in range(2, 12)],
+            ],
+        },
+    }
+
+    refs = _resolve_travel_reference_images(project, proj_dir)
+
+    assert len(refs) == 10
+    assert refs[0].name == "ref-0.png"
+    assert refs[1].name == "ref-1.png"
+    assert len({path.name for path in refs}) == 10
+
+
+def test_append_travel_reference_prompt_note_only_when_included():
+    prompt = "Shot 1"
+    assert _append_travel_reference_prompt_note(prompt, 0) == prompt
+    with_note = _append_travel_reference_prompt_note(prompt, 2)
+    assert "附带 2 张旅游路线参考图" in with_note
+    assert "不要把它们当成新的剧情角色" in with_note
 
 
 def _make_png_bytes() -> bytes:
@@ -292,6 +334,73 @@ async def test_execute_reference_video_task_success(tmp_path: Path, monkeypatch:
     assert result["resource_type"] == "reference_videos"
     assert result["resource_id"] == "E1U1"
     assert result["file_path"].endswith("E1U1.mp4")
+
+
+@pytest.mark.asyncio
+async def test_execute_reference_video_task_adds_travel_reference_images(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    proj_dir = _write_project(tmp_path)
+    ref_dir = proj_dir / "travel_references"
+    ref_dir.mkdir()
+    (ref_dir / "street.png").write_bytes(_make_png_bytes())
+
+    project_path = proj_dir / "project.json"
+    project = json.loads(project_path.read_text(encoding="utf-8"))
+    project["content_type"] = "travel_video"
+    project["travel_video_settings"] = {
+        "route_source": "reference_images",
+        "reference_images": ["travel_references/street.png"],
+    }
+    project_path.write_text(json.dumps(project, ensure_ascii=False), encoding="utf-8")
+
+    from server.services import reference_video_tasks as rvt
+
+    fake_pm = MagicMock()
+    fake_pm.load_project.return_value = json.loads(project_path.read_text(encoding="utf-8"))
+    fake_pm.get_project_path.return_value = proj_dir
+    fake_pm.load_script.side_effect = lambda *_a: json.loads(
+        (proj_dir / "scripts" / "episode_1.json").read_text(encoding="utf-8")
+    )
+    monkeypatch.setattr(rvt, "get_project_manager", lambda: fake_pm)
+
+    captured: dict = {}
+
+    async def _fake_generate_video_async(**kwargs):
+        captured.update(kwargs)
+        out = proj_dir / "reference_videos" / "E1U1.mp4"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"\x00\x00\x00 ftypmp42")
+        return out, 1, None, None
+
+    fake_generator = MagicMock()
+    fake_generator.generate_video_async = AsyncMock(side_effect=_fake_generate_video_async)
+    fake_generator.versions.get_versions.return_value = {"versions": [{"created_at": "2026-04-17T10:00:00"}]}
+    fake_video_backend = MagicMock()
+    fake_video_backend.name = "ark"
+    fake_video_backend.model = "doubao-seedance-2-0-260128"
+    fake_generator._video_backend = fake_video_backend
+
+    async def _fake_get_media_generator(*_a, **_kw):
+        return fake_generator
+
+    monkeypatch.setattr(rvt, "get_media_generator", _fake_get_media_generator)
+
+    async def _fake_extract(*_a, **_k):
+        return True
+
+    monkeypatch.setattr(rvt, "extract_video_thumbnail", _fake_extract)
+
+    await rvt.execute_reference_video_task(
+        "demo",
+        "E1U1",
+        {"script_file": "scripts/episode_1.json"},
+        user_id="u1",
+    )
+
+    assert len(captured["reference_images"]) == 3
+    assert "附带 1 张旅游路线参考图" in captured["prompt"]
 
 
 @pytest.mark.asyncio

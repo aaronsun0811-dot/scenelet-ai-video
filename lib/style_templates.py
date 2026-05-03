@@ -1,13 +1,42 @@
 """风格模版注册表（单一真相源）。
 
-模版 id 命名规则：{category}_{slug}，category ∈ {live, anim}。
+模版 id 命名规则：{category}_{slug}，category ∈ {content, live, anim}。
 prompt 文本来自 docs/生图画风前置提示词4.10.docx。
 """
 
 from __future__ import annotations
 
-# 完整 36 条，顺序即 UI 展示顺序
+# 顺序即 UI 展示顺序
 STYLE_TEMPLATES: dict[str, dict] = {
+    # ===== 内容类型定向 =====
+    "content_scene_sketch": {
+        "category": "content",
+        "prompt": "画风：几分钟情景剧风格，现代生活化场景，多角色自然对话，写实表演，清晰场面调度，柔和室内光，适合横屏多人互动",
+    },
+    "content_short_drama": {
+        "category": "content",
+        "prompt": "画风：精品竖屏短剧风格，强情绪冲突，近景表演，节奏紧凑，商业短剧打光，高反转叙事",
+    },
+    "content_fiction_adaptation": {
+        "category": "content",
+        "prompt": "画风：小说改编剧集风格，人物关系清晰，强剧情氛围，适合都市、古风、悬疑等网文场景，电影化分镜",
+    },
+    "content_narration_story": {
+        "category": "content",
+        "prompt": "画风：口播故事配图风格，旁白驱动画面，氛围感强，画面干净，主体明确，适合叙事、纪实、情感故事",
+    },
+    "content_ad_story": {
+        "category": "content",
+        "prompt": "画风：广告剧情短片风格，产品自然入戏，商业级布光，干净高级的生活方式影像，强调卖点和人物冲突",
+    },
+    "content_education_sketch": {
+        "category": "content",
+        "prompt": "画风：知识小剧场风格，清晰明亮的教学场景，角色对话自然，白板/道具辅助表达，画面信息层次分明",
+    },
+    "content_travel_video": {
+        "category": "content",
+        "prompt": "画风：旅游街景视频风格，真实城市道路与地标，街景推进视角，导游讲解感，画面保留路牌、建筑立面和目的地方向，适合横屏或竖屏路线视频",
+    },
     # ===== 真人 AI 漫剧 (18) =====
     "live_cinematic_ancient": {"category": "live", "prompt": "画风：精品古装真人短剧风格，专业打光，高质量电视剧质感"},
     "live_zhang_yimou": {"category": "live", "prompt": "画风：参考张艺谋电影风格，极致用色，强烈构图，仪式感叙事"},
@@ -127,8 +156,8 @@ def is_known_template(template_id: str) -> bool:
 
 def list_templates_by_category() -> dict[str, list[dict]]:
     """按 category 分组，返回列表保持定义顺序。
-    每项形如 {'id': 'live_xxx', 'prompt': '...'}。"""
-    grouped: dict[str, list[dict]] = {"live": [], "anim": []}
+    每项形如 {'id': 'content_xxx', 'prompt': '...'}。"""
+    grouped: dict[str, list[dict]] = {"content": [], "live": [], "anim": []}
     for tpl_id, data in STYLE_TEMPLATES.items():
         grouped[data["category"]].append({"id": tpl_id, "prompt": data["prompt"]})
     return grouped

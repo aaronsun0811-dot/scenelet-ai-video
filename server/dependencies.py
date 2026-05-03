@@ -7,9 +7,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from lib.config.service import ConfigService
 from lib.db import get_async_session
+from lib.db.base import DEFAULT_USER_ID
+from server.auth import CurrentUser
 
 
 def get_config_service(
+    user: CurrentUser,
     session: AsyncSession = Depends(get_async_session),
 ) -> ConfigService:
-    return ConfigService(session)
+    return ConfigService(session, user_id=user.id or DEFAULT_USER_ID)

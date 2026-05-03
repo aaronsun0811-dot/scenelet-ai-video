@@ -70,6 +70,44 @@ class TestGenerationQueue:
         assert not second["deduped"]
         assert second["task_id"] != first["task_id"]
 
+    async def test_enqueue_dedupe_is_scoped_by_user(self, queue):
+        user_a_task = await queue.enqueue_task(
+            project_name="same-name",
+            task_type="storyboard",
+            media_type="image",
+            resource_id="E1S01",
+            payload={"prompt": "user a"},
+            script_file="episode_01.json",
+            source="webui",
+            user_id="user-a",
+        )
+        user_b_task = await queue.enqueue_task(
+            project_name="same-name",
+            task_type="storyboard",
+            media_type="image",
+            resource_id="E1S01",
+            payload={"prompt": "user b"},
+            script_file="episode_01.json",
+            source="webui",
+            user_id="user-b",
+        )
+        user_a_deduped = await queue.enqueue_task(
+            project_name="same-name",
+            task_type="storyboard",
+            media_type="image",
+            resource_id="E1S01",
+            payload={"prompt": "user a retry"},
+            script_file="episode_01.json",
+            source="webui",
+            user_id="user-a",
+        )
+
+        assert not user_a_task["deduped"]
+        assert not user_b_task["deduped"]
+        assert user_b_task["task_id"] != user_a_task["task_id"]
+        assert user_a_deduped["deduped"]
+        assert user_a_deduped["task_id"] == user_a_task["task_id"]
+
     async def test_event_sequence_and_incremental_read(self, queue):
         task = await queue.enqueue_task(
             project_name="demo",

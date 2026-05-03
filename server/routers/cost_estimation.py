@@ -10,11 +10,13 @@ from fastapi import APIRouter, HTTPException
 from lib import PROJECT_ROOT
 from lib.config.resolver import ConfigResolver
 from lib.db import async_session_factory
+from lib.db.base import PLATFORM_USER_ID
 from lib.i18n import Translator
 from lib.project_manager import ProjectManager
 from lib.usage_tracker import UsageTracker
 from server.auth import CurrentUser
 from server.services.cost_estimation import CostEstimationService
+from server.services.project_access import ensure_project_access, project_manager_for_user
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -26,13 +28,15 @@ async def get_cost_estimate(project_name: str, _user: CurrentUser, _t: Translato
     """获取项目费用估算（预估 + 实际）。"""
 
     def _sync():
-        if not pm.project_exists(project_name):
+        manager = project_manager_for_user(pm, _user.id)
+        if not manager.project_exists(project_name):
             raise HTTPException(status_code=404, detail=_t("project_not_found", name=project_name))
 
         try:
-            project_data = pm.load_project(project_name)
+            project_data = manager.load_project(project_name)
         except FileNotFoundError:
             raise HTTPException(status_code=404, detail=_t("project_not_found", name=project_name))
+        ensure_project_access(project_data, user_id=_user.id, project_name=project_name, translate=_t)
 
         # 加载所有剧本
         scripts: dict[str, dict] = {}
@@ -40,7 +44,7 @@ async def get_cost_estimate(project_name: str, _user: CurrentUser, _t: Translato
             script_file = ep.get("script_file", "")
             if script_file:
                 try:
-                    scripts[script_file] = pm.load_script(project_name, script_file)
+                    scripts[script_file] = manager.load_script(project_name, script_file)
                 except FileNotFoundError:
                     logger.debug("剧本文件不存在，跳过: %s/%s", project_name, script_file)
 
@@ -48,7 +52,8 @@ async def get_cost_estimate(project_name: str, _user: CurrentUser, _t: Translato
 
     project_data, scripts = await asyncio.to_thread(_sync)
 
-    resolver = ConfigResolver(async_session_factory)
+    resolver_user_id = PLATFORM_USER_ID if project_data.get("billing_mode") == "platform_credits" else _user.id
+    resolver = ConfigResolver(async_session_factory, user_id=resolver_user_id)
     tracker = UsageTracker(session_factory=async_session_factory)
     service = CostEstimationService(resolver, tracker)
 

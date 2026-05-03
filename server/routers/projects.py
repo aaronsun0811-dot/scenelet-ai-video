@@ -7,22 +7,27 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import os
 import shutil
 import tempfile
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
+
+import httpx
 
 if TYPE_CHECKING:
     from server.services.jianying_draft_service import JianyingDraftService
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile
 from fastapi import Path as FastAPIPath
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.background import BackgroundTask
 
 logger = logging.getLogger(__name__)
@@ -30,19 +35,40 @@ logger = logging.getLogger(__name__)
 from lib import PROJECT_ROOT
 from lib.asset_fingerprints import compute_asset_fingerprints
 from lib.config.resolver import ConfigResolver
-from lib.db import async_session_factory
+from lib.config.service import ConfigService
+from lib.content_workflows import get_workflow_preset, is_known_content_type
+from lib.db import async_session_factory, get_async_session
+from lib.db.repositories.user_repository import UserRepository
+from lib.httpx_shared import get_http_client
 from lib.i18n import Translator
 from lib.project_change_hints import project_change_source
-from lib.project_manager import ProjectManager
+from lib.project_manager import (
+    PROJECT_ACCESS_FIELD,
+    PROJECT_ACCESS_MEMBERS_FIELD,
+    PROJECT_MEMBER_EDITOR_ROLE,
+    ProjectManager,
+)
+from lib.script_generator import ScriptGenerator
 from lib.status_calculator import StatusCalculator
 from lib.style_templates import is_known_template, resolve_template_prompt
-from server.auth import CurrentUser, create_download_token, verify_download_token
+from server.auth import CurrentUser, CurrentUserInfo, create_download_token, verify_download_token
+from server.dependencies import get_config_service
 from server.routers._validators import validate_backend_value
+from server.services.project_access import (
+    PROJECT_OWNER_FIELD,
+    ensure_project_access,
+    ensure_project_owner,
+    project_manager_for_user,
+    project_members,
+    project_owner_user_id,
+    user_can_access_project,
+)
 from server.services.project_archive import (
     ProjectArchiveService,
     ProjectArchiveValidationError,
 )
 from server.services.project_cover import resolve_project_cover
+from server.services.travel_route import build_travel_route_preview, fetch_travel_route_street_view_image
 
 router = APIRouter()
 
@@ -54,23 +80,77 @@ calc = StatusCalculator(pm)
 # StatusCalculator 注入的统计字段（scenes_count / status / storyboards / videos 等）
 # 是读时计算值，禁止写回 project.json。
 EPISODE_PERSIST_FIELDS = {"title", "script_file", "generation_mode"}
+_VALID_CONTENT_MODES = {"narration", "drama"}
+_VALID_GENERATION_MODES = {"storyboard", "grid", "reference_video"}
+_LEGACY_GENERATION_MODE_ALIASES = {"single": "storyboard"}
+MAX_TRAVEL_REFERENCE_IMAGES = 10
 
 
 def get_project_manager() -> ProjectManager:
     return pm
 
 
+def get_project_manager_for_user(user_id: str | None) -> ProjectManager:
+    return project_manager_for_user(get_project_manager(), user_id)
+
+
 def get_status_calculator() -> StatusCalculator:
     return calc
 
 
-def get_archive_service() -> ProjectArchiveService:
-    return ProjectArchiveService(get_project_manager())
+def get_status_calculator_for_manager(manager: ProjectManager) -> StatusCalculator:
+    configured = get_status_calculator()
+    if configured is not calc:
+        return configured
+    return StatusCalculator(manager)
+
+
+def get_archive_service(user_id: str | None = None) -> ProjectArchiveService:
+    return ProjectArchiveService(get_project_manager_for_user(user_id) if user_id is not None else get_project_manager())
+
+
+def _build_export_preflight_payload(
+    name: str,
+    current_user: CurrentUserInfo,
+    translate: Translator,
+    *,
+    scope: str,
+) -> dict[str, Any]:
+    if scope not in ("full", "current"):
+        raise HTTPException(status_code=422, detail=translate("scope_invalid"))
+
+    manager = get_project_manager_for_user(current_user.id)
+    if not manager.project_exists(name):
+        raise HTTPException(status_code=404, detail=translate("project_not_found", name=name))
+    project = manager.load_project(name)
+    ensure_project_access(project, user_id=current_user.id, project_name=name, translate=translate)
+    return get_archive_service(current_user.id).get_export_preflight(name, scope=scope)
+
+
+class TravelVideoSettings(BaseModel):
+    """Project-level settings for route/street-view based travel videos."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    origin: str | None = None
+    destination: str | None = None
+    route_source: Literal["google_street_view", "baidu_maps", "amap_maps", "manual", "reference_images"] | None = None
+    route_notes: str | None = None
+    reference_images: list[str] | None = None
+    route_preview: dict[str, Any] | None = None
+    narration_language: Literal["auto", "zh", "en", "ja"] | None = None
+    target_duration: Literal["45s", "60s", "90s", "120s", "150s", "180s", "custom"] | None = None
+    custom_duration_seconds: int | None = None
+    camera_style: Literal["street_walk_turns", "street_drive", "landmark_focus", "cinematic_slow"] | None = None
+    narrator_persona: Literal["enthusiastic_guide", "local_friend", "documentary", "calm_guide"] | None = None
+    character_notes: str | None = None
 
 
 class CreateProjectRequest(BaseModel):
     name: str | None = None
     title: str | None = None
+    content_type: str | None = None
+    billing_mode: Literal["byok", "platform_credits"] | None = None
     style: str | None = ""  # 保留但不再是用户入口
     content_mode: str | None = "narration"
     aspect_ratio: str | None = "9:16"
@@ -83,7 +163,9 @@ class CreateProjectRequest(BaseModel):
     text_backend_script: str | None = None
     text_backend_overview: str | None = None
     text_backend_style: str | None = None
+    character_style_prompt: str | None = None
     model_settings: dict[str, dict[str, str | None]] | None = None
+    travel_video_settings: TravelVideoSettings | None = None
 
 
 class EpisodePatch(BaseModel):
@@ -103,6 +185,8 @@ class EpisodePatch(BaseModel):
 class UpdateProjectRequest(BaseModel):
     title: str | None = None
     style: str | None = None
+    content_type: str | None = None
+    billing_mode: Literal["byok", "platform_credits"] | None = None
     content_mode: str | None = None
     aspect_ratio: str | None = None
     default_duration: int | None = None
@@ -113,10 +197,206 @@ class UpdateProjectRequest(BaseModel):
     text_backend_script: str | None = None
     text_backend_overview: str | None = None
     text_backend_style: str | None = None
+    character_style_prompt: str | None = None
     style_template_id: str | None = None
     clear_style_image: bool | None = None
     episodes: list[EpisodePatch] | None = None
     model_settings: dict[str, dict[str, str | None]] | None = None
+    travel_video_settings: TravelVideoSettings | None = None
+
+
+class TravelRoutePreviewRequest(BaseModel):
+    """Build and optionally persist a travel-video route preview."""
+
+    travel_video_settings: TravelVideoSettings | None = None
+    persist: bool = True
+
+
+class ProjectMemberRequest(BaseModel):
+    user_id: str
+    username: str | None = None
+    role: Literal["editor"] = PROJECT_MEMBER_EDITOR_ROLE
+
+
+class ProjectMemberCreateRequest(BaseModel):
+    identifier: str | None = None
+    user_id: str | None = None
+    username: str | None = None
+    role: Literal["editor"] = PROJECT_MEMBER_EDITOR_ROLE
+
+
+def _normalize_member_user_id(user_id: str) -> str:
+    normalized = str(user_id).strip()
+    if not normalized or len(normalized) > 128 or any(ord(ch) < 32 for ch in normalized):
+        raise HTTPException(status_code=422, detail="invalid member user_id")
+    return normalized
+
+
+def _normalize_member_username(username: str | None) -> str | None:
+    normalized = str(username or "").strip()
+    if not normalized:
+        return None
+    if len(normalized) > 64 or any(ord(ch) < 32 for ch in normalized):
+        raise HTTPException(status_code=422, detail="invalid member username")
+    return normalized
+
+
+async def _resolve_member_identity(
+    req: ProjectMemberCreateRequest,
+    session: AsyncSession,
+) -> tuple[str, str | None]:
+    repo = UserRepository(session)
+    raw_identifier = str(req.identifier or "").strip()
+    raw_user_id = str(req.user_id or "").strip()
+    raw_username = _normalize_member_username(req.username)
+    if not raw_identifier and not raw_user_id and not raw_username:
+        raise HTTPException(status_code=422, detail="member identifier is required")
+
+    if raw_username:
+        user = await repo.get_by_username(raw_username)
+        if not user or not user.get("is_active"):
+            raise HTTPException(status_code=404, detail="user not found")
+        return _normalize_member_user_id(str(user["id"])), str(user["username"])
+
+    if raw_user_id:
+        user = await repo.get_by_id(raw_user_id)
+        if user and user.get("is_active"):
+            return _normalize_member_user_id(str(user["id"])), str(user["username"])
+        return _normalize_member_user_id(raw_user_id), None
+
+    user = await repo.get_by_username(raw_identifier)
+    if user and user.get("is_active"):
+        return _normalize_member_user_id(str(user["id"])), str(user["username"])
+    user = await repo.get_by_id(raw_identifier)
+    if user and user.get("is_active"):
+        return _normalize_member_user_id(str(user["id"])), str(user["username"])
+    if raw_identifier.startswith("user_"):
+        return _normalize_member_user_id(raw_identifier), None
+    raise HTTPException(status_code=404, detail="user not found")
+
+
+def _project_members_response(project: dict, *, current_user_id: str | None = None) -> dict[str, object]:
+    members = project_members(project)
+    owner_user_id = project_owner_user_id(project)
+    current_user_role = None
+    if current_user_id is not None:
+        current_user_role = (
+            "owner"
+            if owner_user_id == str(current_user_id)
+            else ProjectManager.project_member_role(project, current_user_id)
+        )
+    return {
+        "owner_user_id": owner_user_id,
+        "current_user_role": current_user_role,
+        "members": [
+            {
+                "user_id": user_id,
+                **entry,
+            }
+            for user_id, entry in sorted(members.items())
+        ],
+    }
+
+
+def _grant_project_member(
+    project: dict,
+    *,
+    user_id: str,
+    role: Literal["editor"],
+    username: str | None = None,
+) -> None:
+    if user_id == project_owner_user_id(project):
+        raise HTTPException(status_code=400, detail="project owner is already a member")
+    access = project.setdefault(PROJECT_ACCESS_FIELD, {})
+    if not isinstance(access, dict):
+        access = {}
+        project[PROJECT_ACCESS_FIELD] = access
+    members = access.setdefault(PROJECT_ACCESS_MEMBERS_FIELD, {})
+    if not isinstance(members, dict):
+        members = {}
+        access[PROJECT_ACCESS_MEMBERS_FIELD] = members
+    member = {
+        "role": role,
+        "added_at": datetime.now().isoformat(),
+    }
+    if username:
+        member["username"] = username
+    members[user_id] = member
+
+
+def _normalize_content_type_or_400(content_type: str | None, _t: Callable[..., str]) -> str | None:
+    if not content_type:
+        return None
+    normalized = str(content_type).strip()
+    if not is_known_content_type(normalized):
+        raise HTTPException(
+            status_code=400,
+            detail=_t("unknown_content_type", content_type=normalized),
+        )
+    return normalized
+
+
+def _normalize_content_mode_or_400(content_mode: str | None, _t: Callable[..., str]) -> str | None:
+    if content_mode is None:
+        return None
+    normalized = str(content_mode).strip()
+    if not normalized:
+        return None
+    if normalized not in _VALID_CONTENT_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail=_t("unknown_content_mode", content_mode=str(content_mode)),
+        )
+    return normalized
+
+
+def _normalize_generation_mode_or_400(generation_mode: str | None, _t: Callable[..., str]) -> str | None:
+    if generation_mode is None:
+        return None
+    normalized = str(generation_mode).strip()
+    if not normalized:
+        return None
+    normalized = _LEGACY_GENERATION_MODE_ALIASES.get(normalized, normalized)
+    if normalized not in _VALID_GENERATION_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail=_t("unknown_generation_mode", generation_mode=str(generation_mode)),
+        )
+    return normalized
+
+
+def _normalize_travel_video_settings(settings: TravelVideoSettings) -> dict[str, Any]:
+    raw = settings.model_dump(exclude_none=True)
+    normalized: dict[str, Any] = {}
+    for key in (
+        "origin",
+        "destination",
+        "route_notes",
+        "character_notes",
+        "route_source",
+        "narration_language",
+        "target_duration",
+        "camera_style",
+        "narrator_persona",
+    ):
+        value = raw.get(key)
+        if not isinstance(value, str):
+            continue
+        normalized[key] = value.strip()
+    reference_images = raw.get("reference_images")
+    if isinstance(reference_images, list):
+        normalized["reference_images"] = [
+            item.strip()
+            for item in reference_images
+            if isinstance(item, str) and item.strip()
+        ][:MAX_TRAVEL_REFERENCE_IMAGES]
+    custom_duration_seconds = raw.get("custom_duration_seconds")
+    if isinstance(custom_duration_seconds, int) and custom_duration_seconds > 0:
+        normalized["custom_duration_seconds"] = custom_duration_seconds
+    route_preview = raw.get("route_preview")
+    if isinstance(route_preview, dict):
+        normalized["route_preview"] = route_preview
+    return normalized
 
 
 def _cleanup_temp_file(path: str) -> None:
@@ -158,11 +438,17 @@ async def import_project_archive(
         await asyncio.to_thread(_write_upload)
 
         def _sync():
-            return get_archive_service().import_project_archive(
+            manager = get_project_manager_for_user(_user.id)
+            result = get_archive_service(_user.id).import_project_archive(
                 Path(upload_path),
                 uploaded_filename=file.filename,
                 conflict_policy=conflict_policy,
             )
+            project = manager.load_project(result.project_name)
+            project[PROJECT_OWNER_FIELD] = _user.id
+            manager.save_project(result.project_name, project)
+            result.project[PROJECT_OWNER_FIELD] = _user.id
+            return result
 
         result = await asyncio.to_thread(_sync)
         return {
@@ -200,6 +486,25 @@ async def import_project_archive(
             _cleanup_temp_file(upload_path)
 
 
+@router.post("/projects/{name}/export/preflight")
+async def get_export_preflight(
+    name: str,
+    current_user: CurrentUser,
+    _t: Translator,
+    scope: str = Query("full"),
+):
+    """执行导出预检并返回诊断/交付报告，不签发下载 token。"""
+    try:
+        return await asyncio.to_thread(
+            lambda: _build_export_preflight_payload(name, current_user, _t, scope=scope)
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("请求处理失败")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/projects/{name}/export/token")
 async def create_export_token(
     name: str,
@@ -209,21 +514,17 @@ async def create_export_token(
 ):
     """签发短时效下载 token，用于浏览器原生下载认证。"""
     try:
-        if scope not in ("full", "current"):
-            raise HTTPException(status_code=422, detail=_t("scope_invalid"))
-
-        def _sync():
-            if not get_project_manager().project_exists(name):
-                raise HTTPException(status_code=404, detail=_t("project_not_found", name=name))
-            return get_archive_service().get_export_diagnostics(name, scope=scope)
-
-        diagnostics = await asyncio.to_thread(_sync)
+        preflight = await asyncio.to_thread(
+            lambda: _build_export_preflight_payload(name, current_user, _t, scope=scope)
+        )
         username = current_user.sub
-        download_token = create_download_token(username, name)
+        download_token = create_download_token(username, name, user_id=current_user.id)
         return {
             "download_token": download_token,
             "expires_in": 300,
-            "diagnostics": diagnostics,
+            "diagnostics": preflight["diagnostics"],
+            "delivery_report": preflight["delivery_report"],
+            "travel_route_assets": preflight.get("travel_route_assets"),
         }
     except HTTPException:
         raise
@@ -247,7 +548,7 @@ async def export_project_archive(
     import jwt as pyjwt
 
     try:
-        verify_download_token(download_token, name)
+        payload = verify_download_token(download_token, name)
     except pyjwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail=_t("download_expired"))
     except ValueError:
@@ -256,8 +557,9 @@ async def export_project_archive(
         raise HTTPException(status_code=401, detail=_t("download_token_invalid"))
 
     try:
+        user_id = str(payload.get("uid") or "default")
         archive_path, download_name = await asyncio.to_thread(
-            lambda: get_archive_service().export_project(name, scope=scope)
+            lambda: get_archive_service(user_id).export_project(name, scope=scope)
         )
         return FileResponse(
             archive_path,
@@ -277,10 +579,10 @@ async def export_project_archive(
 # --- 剪映草稿导出 ---
 
 
-def get_jianying_draft_service() -> JianyingDraftService:
+def get_jianying_draft_service(user_id: str | None = None) -> JianyingDraftService:
     from server.services.jianying_draft_service import JianyingDraftService
 
-    return JianyingDraftService(get_project_manager())
+    return JianyingDraftService(get_project_manager_for_user(user_id) if user_id is not None else get_project_manager())
 
 
 def _validate_draft_path(draft_path: str, _t: Callable[..., str]) -> str:
@@ -308,7 +610,7 @@ def export_jianying_draft(
 
     # 1. 验证 download_token
     try:
-        verify_download_token(download_token, name)
+        payload = verify_download_token(download_token, name)
     except pyjwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail=_t("download_expired"))
     except ValueError:
@@ -320,7 +622,8 @@ def export_jianying_draft(
     draft_path = _validate_draft_path(draft_path, _t)
 
     # 3. 调用服务
-    svc = get_jianying_draft_service()
+    user_id = str(payload.get("uid") or "default")
+    svc = get_jianying_draft_service(user_id)
     try:
         zip_path = svc.export_episode_draft(
             project_name=name,
@@ -351,14 +654,16 @@ async def list_projects(_user: CurrentUser):
     """列出所有项目"""
 
     def _sync():
-        manager = get_project_manager()
-        calculator = get_status_calculator()
+        manager = get_project_manager_for_user(_user.id)
+        calculator = get_status_calculator_for_manager(manager)
         projects = []
         for name in manager.list_projects():
             try:
                 # 尝试加载项目元数据
                 if manager.project_exists(name):
                     project = manager.load_project(name)
+                    if not user_can_access_project(project, _user.id):
+                        continue
                     # 一次性预加载每集剧本，喂给 cover + status 两路下游，去除重复 JSON I/O。
                     # key 为 episode['script_file'] 原值（match resolve_project_cover /
                     # StatusCalculator 对 key 的期望）。任何一集加载失败都不影响列表：
@@ -393,15 +698,26 @@ async def list_projects(_user: CurrentUser):
                         {
                             "name": name,
                             "title": project.get("title", name),
+                            "owner_user_id": project_owner_user_id(project),
+                            "current_user_role": (
+                                "owner"
+                                if project_owner_user_id(project) == str(_user.id)
+                                else ProjectManager.project_member_role(project, _user.id)
+                            ),
+                            "content_type": project.get("content_type"),
+                            "billing_mode": project.get("billing_mode"),
                             "style": project.get("style", ""),
                             "style_template_id": project.get("style_template_id"),
                             "style_image": project.get("style_image"),
+                            "travel_video_settings": project.get("travel_video_settings"),
                             "thumbnail": thumbnail,
                             "status": status,
                         }
                     )
                 else:
                     # 没有 project.json 的项目
+                    if _user.id != "default":
+                        continue
                     projects.append(
                         {
                             "name": name,
@@ -412,6 +728,8 @@ async def list_projects(_user: CurrentUser):
                         }
                     )
             except Exception as e:
+                if _user.id != "default":
+                    continue
                 # 出错时返回基本信息
                 logger.warning("加载项目 '%s' 元数据失败: %s", name, e)
                 projects.append(
@@ -433,21 +751,49 @@ async def create_project(
     try:
 
         def _sync():
-            manager = get_project_manager()
+            manager = get_project_manager_for_user(_user.id)
             title = (req.title or "").strip()
             manual_name = (req.name or "").strip()
             if not title and not manual_name:
                 raise HTTPException(status_code=400, detail=_t("title_required"))
             project_name = manual_name or manager.generate_project_name(title)
+            content_type = _normalize_content_type_or_400(req.content_type, _t)
+            workflow_preset = get_workflow_preset(content_type)
+            content_mode = _normalize_content_mode_or_400(req.content_mode, _t) or "narration"
+            aspect_ratio = req.aspect_ratio or "9:16"
+            generation_mode = _normalize_generation_mode_or_400(req.generation_mode, _t)
+            default_duration = req.default_duration
+            style_template_id = req.style_template_id
+            travel_video_settings: dict[str, str] | None = None
+            if workflow_preset is not None:
+                content_mode = workflow_preset.content_mode
+                if "aspect_ratio" not in req.model_fields_set or not aspect_ratio:
+                    aspect_ratio = workflow_preset.aspect_ratio
+                if generation_mode is None:
+                    generation_mode = workflow_preset.generation_mode
+                if "default_duration" not in req.model_fields_set:
+                    default_duration = workflow_preset.default_duration
+                if "style_template_id" not in req.model_fields_set:
+                    style_template_id = workflow_preset.style_template_id
+
+            if req.travel_video_settings is not None:
+                travel_video_settings = _normalize_travel_video_settings(req.travel_video_settings)
+                if workflow_preset is not None and workflow_preset.travel_video_settings:
+                    travel_video_settings = {
+                        **workflow_preset.travel_video_settings,
+                        **travel_video_settings,
+                    }
+            elif workflow_preset is not None and workflow_preset.travel_video_settings:
+                travel_video_settings = dict(workflow_preset.travel_video_settings)
 
             style_prompt = req.style or ""
-            if req.style_template_id:
-                if not is_known_template(req.style_template_id):
+            if style_template_id:
+                if not is_known_template(style_template_id):
                     raise HTTPException(
                         status_code=400,
-                        detail=_t("unknown_style_template", template_id=req.style_template_id),
+                        detail=_t("unknown_style_template", template_id=style_template_id),
                     )
-                style_prompt = resolve_template_prompt(req.style_template_id)
+                style_prompt = resolve_template_prompt(style_template_id)
 
             # 与 update 路径对称：校验所有 backend 字段
             for field_name in (
@@ -468,29 +814,38 @@ async def create_project(
             extras = {
                 field: value
                 for field in (
+                    "billing_mode",
                     "video_backend",
                     "image_backend",
                     "text_backend_script",
                     "text_backend_overview",
                     "text_backend_style",
+                    "character_style_prompt",
                 )
                 if (value := getattr(req, field))
             }
+            if content_type:
+                extras["content_type"] = content_type
+            if travel_video_settings is not None:
+                extras["travel_video_settings"] = travel_video_settings
             if req.model_settings is not None:
                 extras["model_settings"] = req.model_settings
+            if default_duration is not None:
+                extras["default_duration_explicit"] = True
+            extras[PROJECT_OWNER_FIELD] = _user.id
             with project_change_source("webui"):
                 project = manager.create_project_metadata(
                     project_name,
                     title or manual_name,
                     style_prompt,
-                    req.content_mode,
-                    aspect_ratio=req.aspect_ratio,
-                    default_duration=req.default_duration,
-                    style_template_id=req.style_template_id,
+                    content_mode,
+                    aspect_ratio=aspect_ratio,
+                    default_duration=default_duration,
+                    style_template_id=style_template_id,
                     extras=extras or None,
                 )
-                if req.generation_mode is not None:
-                    project["generation_mode"] = req.generation_mode
+                if generation_mode is not None:
+                    project["generation_mode"] = generation_mode
                     manager.save_project(project_name, project)
             return {"success": True, "name": project_name, "project": project}
 
@@ -516,8 +871,14 @@ async def get_video_capabilities(
     并派生 `max_duration`；同时带回 `project.json.default_duration`（用户偏好）。
     所有 generation_mode（storyboard/grid/reference_video）都可复用。
     """
-    resolver = ConfigResolver(async_session_factory)
+    resolver = ConfigResolver(async_session_factory, user_id=_user.id)
     try:
+        manager = get_project_manager_for_user(_user.id)
+        project = await asyncio.to_thread(manager.load_project, name)
+        ensure_project_access(project, user_id=_user.id, project_name=name, translate=_t)
+        result = resolver.video_capabilities_for_project(project)
+        if inspect.isawaitable(result):
+            return await result
         return await resolver.video_capabilities(name)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=_t("project_not_found", name=name)) from exc
@@ -526,6 +887,130 @@ async def get_video_capabilities(
             status_code=422,
             detail=_t("video_capabilities_unresolved", name=name, reason=str(exc)),
         ) from exc
+
+
+@router.get("/projects/{name}/members")
+async def list_project_members(name: str, _user: CurrentUser, _t: Translator):
+    """List project owner and explicit collaborators."""
+    try:
+
+        def _sync():
+            manager = get_project_manager_for_user(_user.id)
+            project = manager.load_project(name)
+            ensure_project_access(project, user_id=_user.id, project_name=name, translate=_t)
+            return _project_members_response(project, current_user_id=_user.id)
+
+        return await asyncio.to_thread(_sync)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=_t("project_not_found", name=name))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("请求处理失败")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{name}/members")
+async def create_project_member(
+    name: str,
+    req: ProjectMemberCreateRequest,
+    _user: CurrentUser,
+    _t: Translator,
+    session: AsyncSession = Depends(get_async_session),
+):
+    """Grant editor access by username or user id. Only the owner may change membership."""
+    target_user_id, target_username = await _resolve_member_identity(req, session)
+    try:
+
+        def _sync():
+            manager = get_project_manager_for_user(_user.id)
+            project = manager.load_project(name)
+            ensure_project_access(project, user_id=_user.id, project_name=name, translate=_t)
+            ensure_project_owner(project, user_id=_user.id)
+            _grant_project_member(project, user_id=target_user_id, username=target_username, role=req.role)
+            manager.save_project(name, project)
+            return _project_members_response(project, current_user_id=_user.id)
+
+        return await asyncio.to_thread(_sync)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=_t("project_not_found", name=name))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("请求处理失败")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/projects/{name}/members/{member_user_id}")
+async def upsert_project_member(
+    name: str,
+    member_user_id: str,
+    req: ProjectMemberRequest,
+    _user: CurrentUser,
+    _t: Translator,
+):
+    """Grant editor access to a project collaborator. Only the owner may change membership."""
+    try:
+
+        def _sync():
+            manager = get_project_manager_for_user(_user.id)
+            project = manager.load_project(name)
+            ensure_project_access(project, user_id=_user.id, project_name=name, translate=_t)
+            ensure_project_owner(project, user_id=_user.id)
+
+            normalized_path_user_id = _normalize_member_user_id(member_user_id)
+            normalized_body_user_id = _normalize_member_user_id(req.user_id)
+            if normalized_path_user_id != normalized_body_user_id:
+                raise HTTPException(status_code=422, detail="member user_id mismatch")
+            username = _normalize_member_username(req.username)
+            _grant_project_member(project, user_id=normalized_body_user_id, username=username, role=req.role)
+            manager.save_project(name, project)
+            return _project_members_response(project, current_user_id=_user.id)
+
+        return await asyncio.to_thread(_sync)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=_t("project_not_found", name=name))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("请求处理失败")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/projects/{name}/members/{member_user_id}")
+async def delete_project_member(
+    name: str,
+    member_user_id: str,
+    _user: CurrentUser,
+    _t: Translator,
+):
+    """Revoke explicit collaborator access. Only the owner may change membership."""
+    try:
+
+        def _sync():
+            manager = get_project_manager_for_user(_user.id)
+            project = manager.load_project(name)
+            ensure_project_access(project, user_id=_user.id, project_name=name, translate=_t)
+            ensure_project_owner(project, user_id=_user.id)
+
+            normalized_user_id = _normalize_member_user_id(member_user_id)
+            access = project.get(PROJECT_ACCESS_FIELD)
+            members = access.get(PROJECT_ACCESS_MEMBERS_FIELD) if isinstance(access, dict) else None
+            if isinstance(members, dict):
+                members.pop(normalized_user_id, None)
+                if not members:
+                    project.pop(PROJECT_ACCESS_FIELD, None)
+            manager.save_project(name, project)
+            return _project_members_response(project, current_user_id=_user.id)
+
+        return await asyncio.to_thread(_sync)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=_t("project_not_found", name=name))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("请求处理失败")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/projects/{name}")
@@ -538,12 +1023,13 @@ async def get_project(
     try:
 
         def _sync():
-            manager = get_project_manager()
-            calculator = get_status_calculator()
+            manager = get_project_manager_for_user(_user.id)
+            calculator = get_status_calculator_for_manager(manager)
             if not manager.project_exists(name):
                 raise HTTPException(status_code=404, detail=_t("project_not_found", name=name))
 
             project = manager.load_project(name)
+            ensure_project_access(project, user_id=_user.id, project_name=name, translate=_t)
 
             # 注入计算字段（不写入 JSON，仅用于 API 响应）
             project = calculator.enrich_project(name, project)
@@ -585,14 +1071,144 @@ async def get_project(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/projects/{name}/travel-route/preview")
+async def preview_travel_route(
+    name: str,
+    req: TravelRoutePreviewRequest,
+    _user: CurrentUser,
+    _t: Translator,
+    svc: Annotated[ConfigService, Depends(get_config_service)],
+):
+    """Resolve a travel-video route into generation-ready nodes.
+
+    Google Maps / Street View is optional. With a saved key and complete places,
+    this endpoint resolves Google route steps and Street View metadata. Without
+    a key, it returns a manual/reference-image preview instead of blocking.
+    """
+
+    try:
+
+        def _load_settings() -> dict[str, Any]:
+            manager = get_project_manager_for_user(_user.id)
+            project = manager.load_project(name)
+            ensure_project_access(project, user_id=_user.id, project_name=name, translate=_t)
+            if project.get("content_type") != "travel_video":
+                raise HTTPException(status_code=400, detail="not a travel video project")
+            if req.travel_video_settings is not None:
+                return _normalize_travel_video_settings(req.travel_video_settings)
+            settings = project.get("travel_video_settings")
+            return dict(settings) if isinstance(settings, dict) else {}
+
+        settings = await asyncio.to_thread(_load_settings)
+        google_key = (await svc.get_setting("google_maps_api_key", "")).strip()
+        baidu_key = (await svc.get_setting("baidu_maps_api_key", "")).strip()
+        amap_key = (await svc.get_setting("amap_maps_api_key", "")).strip()
+        preview = await build_travel_route_preview(
+            settings,
+            google_maps_api_key=google_key,
+            baidu_maps_api_key=baidu_key,
+            amap_maps_api_key=amap_key,
+            http_client=get_http_client() if google_key or baidu_key or amap_key else None,
+        )
+
+        if req.persist:
+
+            def _persist_preview() -> None:
+                manager = get_project_manager_for_user(_user.id)
+                project = manager.load_project(name)
+                ensure_project_access(project, user_id=_user.id, project_name=name, translate=_t)
+                current = project.get("travel_video_settings")
+                merged = dict(current) if isinstance(current, dict) else {}
+                merged.update(settings)
+                merged["route_preview"] = preview
+                project["travel_video_settings"] = merged
+                with project_change_source("webui"):
+                    manager.save_project(name, project)
+
+            await asyncio.to_thread(_persist_preview)
+
+        return preview
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=_t("project_not_found", name=name))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("请求处理失败")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{name}/travel-route/street-view/{node_id}")
+async def get_travel_route_street_view_image(
+    name: str,
+    node_id: str,
+    _user: CurrentUser,
+    _t: Translator,
+    svc: Annotated[ConfigService, Depends(get_config_service)],
+):
+    """Proxy a persisted Google Street View thumbnail for a travel route node."""
+
+    try:
+
+        def _load_node() -> dict[str, Any]:
+            manager = get_project_manager_for_user(_user.id)
+            project = manager.load_project(name)
+            ensure_project_access(project, user_id=_user.id, project_name=name, translate=_t)
+            if project.get("content_type") != "travel_video":
+                raise HTTPException(status_code=400, detail="not a travel video project")
+            settings = project.get("travel_video_settings")
+            preview = settings.get("route_preview") if isinstance(settings, dict) else None
+            nodes = preview.get("nodes") if isinstance(preview, dict) else None
+            if not isinstance(nodes, list):
+                raise HTTPException(status_code=404, detail="travel route preview not found")
+            for raw_node in nodes:
+                if isinstance(raw_node, dict) and str(raw_node.get("id") or "") == node_id:
+                    return dict(raw_node)
+            raise HTTPException(status_code=404, detail="travel route node not found")
+
+        node = await asyncio.to_thread(_load_node)
+        google_key = (await svc.get_setting("google_maps_api_key", "")).strip()
+        try:
+            http_client = get_http_client()
+        except RuntimeError:
+            http_client = None
+        image_bytes, media_type = await fetch_travel_route_street_view_image(
+            node,
+            google_maps_api_key=google_key,
+            http_client=http_client,
+        )
+        return Response(
+            content=image_bytes,
+            media_type=media_type,
+            headers={"Cache-Control": "private, max-age=300"},
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=_t("project_not_found", name=name))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except httpx.HTTPError as exc:
+        logger.warning("Google Street View image proxy failed: %s", exc)
+        raise HTTPException(status_code=502, detail="google street view image request failed")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("请求处理失败")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.patch("/projects/{name}")
 async def update_project(name: str, req: UpdateProjectRequest, _user: CurrentUser, _t: Translator):
     """更新项目元数据"""
     try:
 
         def _sync():
-            manager = get_project_manager()
+            manager = get_project_manager_for_user(_user.id)
             project = manager.load_project(name)
+            ensure_project_access(project, user_id=_user.id, project_name=name, translate=_t)
+            requested_generation_mode = (
+                _normalize_generation_mode_or_400(req.generation_mode, _t)
+                if "generation_mode" in req.model_fields_set
+                else None
+            )
 
             if req.content_mode is not None:
                 raise HTTPException(
@@ -604,6 +1220,40 @@ async def update_project(name: str, req: UpdateProjectRequest, _user: CurrentUse
                 project["title"] = req.title
             if req.style is not None:
                 project["style"] = req.style
+            if "content_type" in req.model_fields_set:
+                content_type = _normalize_content_type_or_400(req.content_type, _t)
+                if content_type:
+                    workflow_preset = get_workflow_preset(content_type)
+                    project["content_type"] = content_type
+                    if workflow_preset:
+                        project["content_mode"] = workflow_preset.content_mode
+                        if "aspect_ratio" not in req.model_fields_set:
+                            project["aspect_ratio"] = workflow_preset.aspect_ratio
+                        if "generation_mode" not in req.model_fields_set:
+                            project["generation_mode"] = workflow_preset.generation_mode
+                        if (
+                            "default_duration" not in req.model_fields_set
+                            and project.get("default_duration_explicit") is not True
+                        ):
+                            project["default_duration"] = workflow_preset.default_duration
+                            project["default_duration_explicit"] = True
+                        if "style_template_id" not in req.model_fields_set and not project.get("style_image"):
+                            current_template = project.get("style_template_id")
+                            if current_template is None or str(current_template).startswith("content_"):
+                                project["style_template_id"] = workflow_preset.style_template_id
+                                project["style"] = resolve_template_prompt(workflow_preset.style_template_id)
+                        if "travel_video_settings" not in req.model_fields_set:
+                            if workflow_preset.travel_video_settings:
+                                project["travel_video_settings"] = dict(workflow_preset.travel_video_settings)
+                            else:
+                                project.pop("travel_video_settings", None)
+                else:
+                    project.pop("content_type", None)
+            if "billing_mode" in req.model_fields_set:
+                if req.billing_mode:
+                    project["billing_mode"] = req.billing_mode
+                else:
+                    project.pop("billing_mode", None)
             for field in (
                 "video_backend",
                 "image_backend",
@@ -623,18 +1273,25 @@ async def update_project(name: str, req: UpdateProjectRequest, _user: CurrentUse
                     project.pop("video_generate_audio", None)
                 else:
                     project["video_generate_audio"] = req.video_generate_audio
+            if "character_style_prompt" in req.model_fields_set:
+                if req.character_style_prompt:
+                    project["character_style_prompt"] = req.character_style_prompt.strip()
+                else:
+                    project.pop("character_style_prompt", None)
             if "aspect_ratio" in req.model_fields_set and req.aspect_ratio is not None:
                 project["aspect_ratio"] = req.aspect_ratio
             if "generation_mode" in req.model_fields_set:
-                if req.generation_mode is None:
+                if requested_generation_mode is None:
                     project.pop("generation_mode", None)
                 else:
-                    project["generation_mode"] = req.generation_mode
+                    project["generation_mode"] = requested_generation_mode
             if "default_duration" in req.model_fields_set:
                 if req.default_duration is None:
                     project.pop("default_duration", None)
+                    project.pop("default_duration_explicit", None)
                 else:
                     project["default_duration"] = req.default_duration
+                    project["default_duration_explicit"] = True
 
             if "style_template_id" in req.model_fields_set:
                 if req.style_template_id is None:
@@ -663,6 +1320,12 @@ async def update_project(name: str, req: UpdateProjectRequest, _user: CurrentUse
                     project.pop("model_settings", None)
                 else:
                     project["model_settings"] = req.model_settings
+
+            if "travel_video_settings" in req.model_fields_set:
+                if req.travel_video_settings is None:
+                    project.pop("travel_video_settings", None)
+                else:
+                    project["travel_video_settings"] = _normalize_travel_video_settings(req.travel_video_settings)
 
             if "episodes" in req.model_fields_set and req.episodes is not None:
                 # 合并 episodes：保留现有 episode 的完整数据，仅更新请求中显式提供的字段。
@@ -718,8 +1381,11 @@ async def delete_project(name: str, _user: CurrentUser, _t: Translator):
     try:
 
         def _sync():
-            project_dir = get_project_manager().get_project_path(name)
-            shutil.rmtree(project_dir)
+            manager = get_project_manager_for_user(_user.id)
+            project = manager.load_project(name)
+            ensure_project_access(project, user_id=_user.id, project_name=name, translate=_t)
+            ensure_project_owner(project, user_id=_user.id)
+            shutil.rmtree(manager.get_project_path(name))
             return {"success": True, "message": _t("project_deleted", name=name)}
 
         return await asyncio.to_thread(_sync)
@@ -736,7 +1402,13 @@ async def delete_project(name: str, _user: CurrentUser, _t: Translator):
 async def get_script(name: str, script_file: str, _user: CurrentUser, _t: Translator):
     """获取剧本内容"""
     try:
-        script = await asyncio.to_thread(get_project_manager().load_script, name, script_file)
+        def _sync():
+            manager = get_project_manager_for_user(_user.id)
+            project = manager.load_project(name)
+            ensure_project_access(project, user_id=_user.id, project_name=name, translate=_t)
+            return manager.load_script(name, script_file)
+
+        script = await asyncio.to_thread(_sync)
         return {"script": script}
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=_t("script_not_found", name=script_file))
@@ -758,7 +1430,9 @@ async def update_scene(name: str, scene_id: str, req: UpdateSceneRequest, _user:
     try:
 
         def _sync():
-            manager = get_project_manager()
+            manager = get_project_manager_for_user(_user.id)
+            project = manager.load_project(name)
+            ensure_project_access(project, user_id=_user.id, project_name=name, translate=_t)
             script = manager.load_script(name, req.script_file)
 
             # 找到并更新场景
@@ -820,13 +1494,23 @@ class UpdateOverviewRequest(BaseModel):
     world_setting: str | None = None
 
 
+class GenerateEpisodeDraftRequest(BaseModel):
+    episode: int = 1
+
+
+class GenerateEpisodeScriptRequest(BaseModel):
+    episode: int = 1
+
+
 @router.patch("/projects/{name}/segments/{segment_id}")
 async def update_segment(name: str, segment_id: str, req: UpdateSegmentRequest, _user: CurrentUser, _t: Translator):
     """更新说书模式片段"""
     try:
 
         def _sync():
-            manager = get_project_manager()
+            manager = get_project_manager_for_user(_user.id)
+            project = manager.load_project(name)
+            ensure_project_access(project, user_id=_user.id, project_name=name, translate=_t)
             script = manager.load_script(name, req.script_file)
 
             # 检查是否为说书模式
@@ -901,7 +1585,7 @@ async def set_project_source(
         raise HTTPException(status_code=400, detail=_t("one_of_content_or_file"))
 
     try:
-        manager = get_project_manager()
+        manager = get_project_manager_for_user(_user.id)
 
         # 异步读取上传文件
         raw: bytes | None = None
@@ -916,8 +1600,8 @@ async def set_project_source(
 
         # 同步文件 I/O 在线程中执行
         def _sync_write():
-            if not manager.project_exists(name):
-                raise HTTPException(status_code=404, detail=_t("project_not_found", name=name))
+            project = manager.load_project(name)
+            ensure_project_access(project, user_id=_user.id, project_name=name, translate=_t)
             project_dir = manager.get_project_path(name)
             source_dir = project_dir / "source"
             source_dir.mkdir(parents=True, exist_ok=True)
@@ -946,7 +1630,7 @@ async def set_project_source(
         if generate_overview:
             try:
                 with project_change_source("webui"):
-                    overview = await manager.generate_overview(name)
+                    overview = await manager.generate_overview(name, user_id=_user.id)
                 result["overview"] = overview
             except Exception as ov_err:
                 result["overview"] = None
@@ -970,11 +1654,138 @@ async def set_project_source(
 async def generate_overview(name: str, _user: CurrentUser, _t: Translator):
     """使用 AI 生成项目概述"""
     try:
+        manager = get_project_manager_for_user(_user.id)
+        project = await asyncio.to_thread(manager.load_project, name)
+        ensure_project_access(project, user_id=_user.id, project_name=name, translate=_t)
         with project_change_source("webui"):
-            overview = await get_project_manager().generate_overview(name)
+            overview = await manager.generate_overview(name, user_id=_user.id)
         return {"success": True, "overview": overview}
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=_t("project_not_found", name=name))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("请求处理失败")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{name}/generate-characters")
+async def generate_characters(name: str, _user: CurrentUser, _t: Translator):
+    """使用 AI 从项目素材生成/补全角色库"""
+    try:
+        manager = get_project_manager_for_user(_user.id)
+        project = await asyncio.to_thread(manager.load_project, name)
+        ensure_project_access(project, user_id=_user.id, project_name=name, translate=_t)
+        with project_change_source("webui"):
+            result = await manager.generate_characters(name, user_id=_user.id)
+        return {"success": True, **result}
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=_t("project_not_found", name=name))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("请求处理失败")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{name}/generate-scenes")
+async def generate_scenes(name: str, _user: CurrentUser, _t: Translator):
+    """使用 AI 从项目素材生成/补全场景库"""
+    try:
+        manager = get_project_manager_for_user(_user.id)
+        project = await asyncio.to_thread(manager.load_project, name)
+        ensure_project_access(project, user_id=_user.id, project_name=name, translate=_t)
+        with project_change_source("webui"):
+            result = await manager.generate_scenes(name, user_id=_user.id)
+        return {"success": True, **result}
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=_t("project_not_found", name=name))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("请求处理失败")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{name}/generate-props")
+async def generate_props(name: str, _user: CurrentUser, _t: Translator):
+    """使用 AI 从项目素材生成/补全道具库"""
+    try:
+        manager = get_project_manager_for_user(_user.id)
+        project = await asyncio.to_thread(manager.load_project, name)
+        ensure_project_access(project, user_id=_user.id, project_name=name, translate=_t)
+        with project_change_source("webui"):
+            result = await manager.generate_props(name, user_id=_user.id)
+        return {"success": True, **result}
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=_t("project_not_found", name=name))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("请求处理失败")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{name}/generate-episode-draft")
+async def generate_episode_draft(name: str, req: GenerateEpisodeDraftRequest, _user: CurrentUser, _t: Translator):
+    """使用 AI 从项目素材生成分集 Step1 草稿"""
+    try:
+        manager = get_project_manager_for_user(_user.id)
+        project = await asyncio.to_thread(manager.load_project, name)
+        ensure_project_access(project, user_id=_user.id, project_name=name, translate=_t)
+        with project_change_source("webui"):
+            result = await manager.generate_episode_draft(name, req.episode, user_id=_user.id)
+        return {"success": True, **result}
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=_t("project_not_found", name=name))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("请求处理失败")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{name}/generate-episode-script")
+async def generate_episode_script(name: str, req: GenerateEpisodeScriptRequest, _user: CurrentUser, _t: Translator):
+    """使用 AI 将分集 Step1 草稿生成最终 JSON 剧本"""
+    try:
+        manager = get_project_manager_for_user(_user.id)
+        project = await asyncio.to_thread(manager.load_project, name)
+        ensure_project_access(project, user_id=_user.id, project_name=name, translate=_t)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=_t("project_not_found", name=name))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("请求处理失败")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    try:
+        project_path = await asyncio.to_thread(manager.get_project_path, name)
+        with project_change_source("webui"):
+            generator = await ScriptGenerator.create(project_path, user_id=_user.id)
+            output_path = await generator.generate(req.episode)
+            script_filename = Path(output_path).name
+            await asyncio.to_thread(manager.sync_episode_from_script, name, script_filename)
+        script = await asyncio.to_thread(manager.load_script, name, script_filename)
+        return {
+            "success": True,
+            "episode": req.episode,
+            "script_file": f"scripts/{script_filename}",
+            "script": script,
+        }
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
@@ -990,8 +1801,9 @@ async def update_overview(name: str, req: UpdateOverviewRequest, _user: CurrentU
     try:
 
         def _sync():
-            manager = get_project_manager()
+            manager = get_project_manager_for_user(_user.id)
             project = manager.load_project(name)
+            ensure_project_access(project, user_id=_user.id, project_name=name, translate=_t)
 
             if "overview" not in project:
                 project["overview"] = {}

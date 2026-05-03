@@ -13,7 +13,7 @@ import type { ProviderConfigDetail, ProviderField } from "@/types";
 // ---------------------------------------------------------------------------
 
 const STATUS_BADGE_MAP: Record<string, { label: string; cls: string }> = {
-  ready: { label: "status_ready", cls: "bg-green-900/30 text-green-400 border border-green-800/50" },
+  ready: { label: "status_configured", cls: "bg-green-900/30 text-green-400 border border-green-800/50" },
   unconfigured: { label: "status_unconfigured", cls: "bg-gray-800 text-gray-400 border border-gray-700" },
   error: { label: "status_error", cls: "bg-red-900/30 text-red-400 border border-red-800/50" },
 };

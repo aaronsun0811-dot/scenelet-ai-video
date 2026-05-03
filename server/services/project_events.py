@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from lib import PROJECT_ROOT
+from lib.db.base import DEFAULT_USER_ID
 from lib.project_change_hints import (
     ProjectChangeBatch,
     ProjectChangeSource,
@@ -95,12 +96,20 @@ class ProjectEventService:
         self._channels.clear()
         self._loop = None
 
-    async def subscribe(self, project_name: str) -> tuple[asyncio.Queue, dict[str, Any]]:
-        await asyncio.to_thread(self.pm.get_project_path, project_name)
-        channel = self._channels.get(project_name)
+    @staticmethod
+    def _channel_key(project_name: str, user_id: str | None) -> str:
+        return f"{user_id or DEFAULT_USER_ID}:{project_name}"
+
+    def _pm_for_user(self, user_id: str | None) -> ProjectManager:
+        return self.pm.for_user(user_id or DEFAULT_USER_ID)
+
+    async def subscribe(self, project_name: str, user_id: str | None = None) -> tuple[asyncio.Queue, dict[str, Any]]:
+        await asyncio.to_thread(self._pm_for_user(user_id).get_project_path, project_name)
+        channel_key = self._channel_key(project_name, user_id)
+        channel = self._channels.get(channel_key)
         if channel is None:
             channel = _ProjectChannel()
-            self._channels[project_name] = channel
+            self._channels[channel_key] = channel
 
         queue: asyncio.Queue = asyncio.Queue(maxsize=100)
         channel.subscribers.add(queue)
@@ -110,15 +119,16 @@ class ProjectEventService:
             channel.scan_now = asyncio.Event()
             channel.pending_sources.clear()
             channel.task = asyncio.create_task(
-                self._watch_project(project_name, channel),
-                name=f"project-events-{project_name}",
+                self._watch_project(project_name, user_id or DEFAULT_USER_ID, channel),
+                name=f"project-events-{user_id or DEFAULT_USER_ID}-{project_name}",
             )
 
         await channel.ready_event.wait()
         return queue, self._build_snapshot_payload(project_name, channel)
 
-    async def unsubscribe(self, project_name: str, queue: asyncio.Queue) -> None:
-        channel = self._channels.get(project_name)
+    async def unsubscribe(self, project_name: str, queue: asyncio.Queue, user_id: str | None = None) -> None:
+        channel_key = self._channel_key(project_name, user_id)
+        channel = self._channels.get(channel_key)
         if channel is None:
             return
         channel.subscribers.discard(queue)
@@ -128,13 +138,14 @@ class ProjectEventService:
         if task is not None:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
-        self._channels.pop(project_name, None)
+        self._channels.pop(channel_key, None)
 
     def _on_hint(
         self,
         project_name: str,
         source: ProjectChangeSource,
         changed_paths: tuple[str, ...],
+        user_id: str | None = None,
     ) -> None:
         loop = self._loop
         if loop is None or loop.is_closed():
@@ -144,6 +155,7 @@ class ProjectEventService:
             project_name,
             source,
             changed_paths,
+            user_id,
         )
 
     def _on_batch_hint(
@@ -151,6 +163,7 @@ class ProjectEventService:
         project_name: str,
         source: ProjectChangeSource,
         changes: tuple[ProjectChangeBatch, ...],
+        user_id: str | None = None,
     ) -> None:
         loop = self._loop
         if loop is None or loop.is_closed():
@@ -160,19 +173,28 @@ class ProjectEventService:
             project_name,
             source,
             changes,
+            user_id,
         )
+
+    def _channel_matches(self, channel_key: str, project_name: str, user_id: str | None = None) -> bool:
+        if not channel_key.endswith(f":{project_name}"):
+            return False
+        if user_id is None:
+            return True
+        return channel_key == self._channel_key(project_name, user_id)
 
     def _apply_hint(
         self,
         project_name: str,
         source: ProjectChangeSource,
         changed_paths: tuple[str, ...],
+        user_id: str | None = None,
     ) -> None:
-        channel = self._channels.get(project_name)
-        if channel is None:
-            return
-        channel.pending_sources.add(source)
-        channel.scan_now.set()
+        for channel_key, channel in list(self._channels.items()):
+            if not self._channel_matches(channel_key, project_name, user_id):
+                continue
+            channel.pending_sources.add(source)
+            channel.scan_now.set()
         logger.debug(
             "项目变更 hint project=%s source=%s paths=%s",
             project_name,
@@ -185,31 +207,49 @@ class ProjectEventService:
         project_name: str,
         source: ProjectChangeSource,
         changes: tuple[ProjectChangeBatch, ...],
+        user_id: str | None = None,
     ) -> None:
-        channel = self._channels.get(project_name)
-        if channel is None or not changes:
+        if not changes:
+            return
+        matches = [
+            (channel_key, channel)
+            for channel_key, channel in list(self._channels.items())
+            if self._channel_matches(channel_key, project_name, user_id)
+        ]
+        if len(matches) == 1:
+            channel_key, channel = matches[0]
+            user_id = channel_key[: -(len(project_name) + 1)]
+            channel.scan_now.clear()
+            task = asyncio.create_task(
+                self._async_rebuild_and_broadcast(project_name, user_id, channel, source, changes),
+                name=f"batch-rebuild-{user_id}-{project_name}",
+            )
+            self._pending_batch_tasks.add(task)
+            task.add_done_callback(self._pending_batch_tasks.discard)
             return
 
-        channel.scan_now.clear()
-
-        # 文件 I/O 下沉到线程池，状态更新和广播留在事件循环
-        task = asyncio.create_task(
-            self._async_rebuild_and_broadcast(project_name, channel, source, changes),
-            name=f"batch-rebuild-{project_name}",
-        )
-        self._pending_batch_tasks.add(task)
-        task.add_done_callback(self._pending_batch_tasks.discard)
+        for channel_key, channel in matches:
+            user_id = channel_key[: -(len(project_name) + 1)]
+            channel.pending_sources.add(source)
+            channel.scan_now.set()
+            logger.debug(
+                "项目显式 batch hint 转为用户内快照扫描 project=%s user=%s changes=%s",
+                project_name,
+                user_id,
+                len(changes),
+            )
 
     async def _async_rebuild_and_broadcast(
         self,
         project_name: str,
+        user_id: str,
         channel: _ProjectChannel,
         source: ProjectChangeSource,
         changes: tuple[ProjectChangeBatch, ...],
     ) -> None:
         """文件 I/O 在线程中执行，状态更新和广播在事件循环线程中执行。"""
         try:
-            snapshot, fingerprint = await asyncio.to_thread(self._rebuild_snapshot, project_name)
+            snapshot, fingerprint = await asyncio.to_thread(self._rebuild_snapshot, project_name, user_id)
         except Exception:
             logger.exception("构建显式项目事件快照失败 project=%s", project_name)
             return
@@ -229,18 +269,19 @@ class ProjectEventService:
         }
         self._broadcast(project_name, channel, "changes", payload)
 
-    def _rebuild_snapshot(self, project_name: str) -> tuple[dict[str, Any], str]:
+    def _rebuild_snapshot(self, project_name: str, user_id: str | None = None) -> tuple[dict[str, Any], str]:
         """同步方法（在线程池中执行）：重建快照并返回 (snapshot, fingerprint)。"""
-        self._ensure_script_index_synced(project_name)
-        snapshot = self._build_snapshot(project_name)
+        pm = self._pm_for_user(user_id)
+        self._ensure_script_index_synced(pm, project_name)
+        snapshot = self._build_snapshot(pm, project_name)
         return snapshot, _fingerprint(snapshot)
 
-    async def _watch_project(self, project_name: str, channel: _ProjectChannel) -> None:
+    async def _watch_project(self, project_name: str, user_id: str, channel: _ProjectChannel) -> None:
         try:
             while channel.subscribers:
                 try:
                     # 仅文件 I/O 在线程中执行
-                    snapshot, fingerprint = await asyncio.to_thread(self._rebuild_snapshot, project_name)
+                    snapshot, fingerprint = await asyncio.to_thread(self._rebuild_snapshot, project_name, user_id)
                     # 状态更新和广播在事件循环线程中执行（线程安全）
                     self._apply_scan_result(project_name, channel, snapshot, fingerprint)
                 except asyncio.CancelledError:
@@ -338,13 +379,16 @@ class ProjectEventService:
                 project_name,
             )
 
-    def _ensure_script_index_synced(self, project_name: str) -> None:
-        project_path = self.pm.get_project_path(project_name)
+    def _ensure_script_index_synced(self, pm: ProjectManager | str, project_name: str | None = None) -> None:
+        if project_name is None:
+            project_name = str(pm)
+            pm = self.pm
+        project_path = pm.get_project_path(project_name)
         scripts_dir = project_path / "scripts"
         if not scripts_dir.exists():
             return
 
-        project = self.pm.load_project(project_name)
+        project = pm.load_project(project_name)
         current_episodes = {
             int(ep.get("episode")): {
                 "title": str(ep.get("title") or ""),
@@ -356,7 +400,7 @@ class ProjectEventService:
 
         for script_path in sorted(scripts_dir.glob("*.json")):
             try:
-                script = self.pm.load_script(project_name, script_path.name)
+                script = pm.load_script(project_name, script_path.name)
             except Exception:
                 logger.warning("跳过无法读取的剧本文件 project=%s file=%s", project_name, script_path.name)
                 continue
@@ -372,7 +416,7 @@ class ProjectEventService:
 
             try:
                 with project_change_source("filesystem"):
-                    self.pm.sync_episode_from_script(project_name, script_path.name)
+                    pm.sync_episode_from_script(project_name, script_path.name)
             except ValueError as exc:
                 # filename 与脚本内 episode 字段不一致：跳过同步避免污染 project.json，
                 # 同时避免 SSE 扫描循环无限重试导致 metadata.updated_at 抖动。
@@ -388,9 +432,12 @@ class ProjectEventService:
                 "script_file": expected_script_file,
             }
 
-    def _build_snapshot(self, project_name: str) -> dict[str, Any]:
-        project = self.pm.load_project(project_name)
-        scripts_dir = self.pm.get_project_path(project_name) / "scripts"
+    def _build_snapshot(self, pm: ProjectManager | str, project_name: str | None = None) -> dict[str, Any]:
+        if project_name is None:
+            project_name = str(pm)
+            pm = self.pm
+        project = pm.load_project(project_name)
+        scripts_dir = pm.get_project_path(project_name) / "scripts"
         project_meta = {
             "title": str(project.get("title") or ""),
             "style": str(project.get("style") or ""),
@@ -457,7 +504,7 @@ class ProjectEventService:
         if scripts_dir.exists():
             for script_path in sorted(scripts_dir.glob("*.json")):
                 try:
-                    script = self.pm.load_script(project_name, script_path.name)
+                    script = pm.load_script(project_name, script_path.name)
                 except Exception:
                     logger.warning("跳过无法解析的剧本快照 project=%s file=%s", project_name, script_path.name)
                     continue

@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from lib.db.base import Base
+from lib.db.repositories.credit_repository import CreditRepository
 from lib.db.repositories.task_repo import TaskRepository
 
 
@@ -57,6 +58,64 @@ class TestTaskRepository:
         done = await repo.mark_succeeded(first["task_id"], {"file": "test.png"})
         assert done["status"] == "succeeded"
 
+    async def test_enqueue_dedupe_is_scoped_by_user(self, db_session):
+        repo = TaskRepository(db_session)
+
+        user_a_task = await repo.enqueue(
+            project_name="same-name",
+            task_type="storyboard",
+            media_type="image",
+            resource_id="E1S01",
+            payload={"prompt": "user a"},
+            script_file="ep1.json",
+            user_id="user-a",
+        )
+        user_b_task = await repo.enqueue(
+            project_name="same-name",
+            task_type="storyboard",
+            media_type="image",
+            resource_id="E1S01",
+            payload={"prompt": "user b"},
+            script_file="ep1.json",
+            user_id="user-b",
+        )
+        user_a_deduped = await repo.enqueue(
+            project_name="same-name",
+            task_type="storyboard",
+            media_type="image",
+            resource_id="E1S01",
+            payload={"prompt": "user a retry"},
+            script_file="ep1.json",
+            user_id="user-a",
+        )
+
+        assert not user_a_task["deduped"]
+        assert not user_b_task["deduped"]
+        assert user_b_task["task_id"] != user_a_task["task_id"]
+        assert user_a_deduped["deduped"]
+        assert user_a_deduped["task_id"] == user_a_task["task_id"]
+
+    async def test_terminal_status_releases_credit_reservation(self, db_session):
+        task_repo = TaskRepository(db_session)
+        credit_repo = CreditRepository(db_session, user_id="user-a")
+
+        task = await task_repo.enqueue(
+            project_name="demo",
+            task_type="storyboard",
+            media_type="image",
+            resource_id="E1S01",
+            payload={"prompt": "test"},
+            user_id="user-a",
+        )
+        await credit_repo.add_entry(amount=100, kind="grant")
+        await credit_repo.reserve_generation_credits(task_id=task["task_id"], amount=67)
+        assert await credit_repo.get_available_balance() == 33
+
+        await task_repo.mark_failed(task["task_id"], "boom")
+
+        assert await credit_repo.get_reserved_generation_credits() == 0
+        assert await credit_repo.get_available_balance() == 100
+
     async def test_event_sequence(self, db_session):
         repo = TaskRepository(db_session)
 
@@ -75,6 +134,177 @@ class TestTaskRepository:
         assert len(events) >= 3
         types = [e["event_type"] for e in events]
         assert types == ["queued", "running", "failed"]
+
+    async def test_retry_failed_task_clones_task_into_queue(self, db_session):
+        repo = TaskRepository(db_session)
+
+        task = await repo.enqueue(
+            project_name="demo",
+            task_type="storyboard",
+            media_type="image",
+            resource_id="E1S01",
+            payload={"prompt": "retry me"},
+            script_file="ep1.json",
+            source="webui",
+            user_id="user-a",
+        )
+        await repo.claim_next("image")
+        await repo.mark_failed(task["task_id"], "boom")
+
+        retried = await repo.retry_failed_task(task["task_id"], user_id="user-a")
+
+        assert retried["status"] == "queued"
+        assert retried["task_id"] != task["task_id"]
+        cloned = await repo.get(retried["task_id"], user_id="user-a")
+        assert cloned["task_type"] == "storyboard"
+        assert cloned["resource_id"] == "E1S01"
+        assert cloned["payload"] == {"prompt": "retry me"}
+        assert cloned["script_file"] == "ep1.json"
+
+        original = await repo.get(task["task_id"], user_id="user-a")
+        assert original["status"] == "failed"
+
+    async def test_retry_failed_task_can_refresh_payload_before_clone(self, db_session):
+        repo = TaskRepository(db_session)
+
+        task = await repo.enqueue(
+            project_name="demo",
+            task_type="storyboard",
+            media_type="image",
+            resource_id="E1S01",
+            payload={
+                "prompt": "retry me",
+                "model_rule_summary": {"mode": "default", "rule_target": "__media__/image"},
+            },
+            script_file="ep1.json",
+            user_id="user-a",
+        )
+        await repo.claim_next("image")
+        await repo.mark_failed(task["task_id"], "boom")
+
+        async def _refresh(payload, task_context):
+            assert task_context["task_type"] == "storyboard"
+            assert task_context["media_type"] == "image"
+            return {
+                **payload,
+                "model_rule_summary": {
+                    "mode": "prompt",
+                    "rule_target": "__media__/image",
+                    "task_type": task_context["task_type"],
+                },
+            }
+
+        retried = await repo.retry_failed_task(
+            task["task_id"],
+            user_id="user-a",
+            payload_refresh=_refresh,
+        )
+
+        cloned = await repo.get(retried["task_id"], user_id="user-a")
+        assert cloned["payload"]["prompt"] == "retry me"
+        assert cloned["payload"]["model_rule_summary"]["mode"] == "prompt"
+        assert retried["retried_tasks"][0]["payload"]["model_rule_summary"]["mode"] == "prompt"
+
+    async def test_retry_failed_task_retries_failed_dependency_chain(self, db_session):
+        repo = TaskRepository(db_session)
+
+        first = await repo.enqueue(
+            project_name="demo",
+            task_type="storyboard",
+            media_type="image",
+            resource_id="E1S01",
+            payload={"prompt": "first"},
+            script_file="ep1.json",
+            dependency_group="ep1:group:1",
+            dependency_index=0,
+        )
+        second = await repo.enqueue(
+            project_name="demo",
+            task_type="storyboard",
+            media_type="image",
+            resource_id="E1S02",
+            payload={"prompt": "second"},
+            script_file="ep1.json",
+            dependency_task_id=first["task_id"],
+            dependency_group="ep1:group:1",
+            dependency_index=1,
+        )
+
+        await repo.claim_next("image")
+        await repo.mark_failed(first["task_id"], "boom")
+
+        retried_second = await repo.retry_failed_task(second["task_id"])
+        cloned_second = await repo.get(retried_second["task_id"])
+        cloned_first = await repo.get(cloned_second["dependency_task_id"])
+
+        assert cloned_first["task_id"] != first["task_id"]
+        assert cloned_first["status"] == "queued"
+        assert cloned_first["resource_id"] == "E1S01"
+        assert cloned_first["dependency_task_id"] is None
+        assert cloned_second["task_id"] != second["task_id"]
+        assert cloned_second["status"] == "queued"
+        assert cloned_second["resource_id"] == "E1S02"
+        assert cloned_second["dependency_task_id"] == cloned_first["task_id"]
+        assert cloned_second["dependency_group"] == "ep1:group:1"
+        assert cloned_second["dependency_index"] == 1
+        assert [item["task_id"] for item in retried_second["retried_tasks"]] == [
+            cloned_first["task_id"],
+            cloned_second["task_id"],
+        ]
+
+    async def test_retry_failed_task_preserves_succeeded_dependency(self, db_session):
+        repo = TaskRepository(db_session)
+
+        first = await repo.enqueue(
+            project_name="demo",
+            task_type="storyboard",
+            media_type="image",
+            resource_id="E1S01",
+            payload={},
+            script_file="ep1.json",
+        )
+        second = await repo.enqueue(
+            project_name="demo",
+            task_type="storyboard",
+            media_type="image",
+            resource_id="E1S02",
+            payload={},
+            script_file="ep1.json",
+            dependency_task_id=first["task_id"],
+            dependency_group="ep1:group:1",
+            dependency_index=1,
+        )
+
+        await repo.claim_next("image")
+        await repo.mark_succeeded(first["task_id"], {"file": "scene_E1S01.png"})
+        await repo.claim_next("image")
+        await repo.mark_failed(second["task_id"], "second failed")
+
+        retried = await repo.retry_failed_task(second["task_id"])
+        cloned = await repo.get(retried["task_id"])
+
+        assert cloned["dependency_task_id"] == first["task_id"]
+        assert cloned["dependency_group"] == "ep1:group:1"
+        assert cloned["dependency_index"] == 1
+
+    async def test_retry_failed_task_requires_owner_and_failed_status(self, db_session):
+        repo = TaskRepository(db_session)
+
+        task = await repo.enqueue(
+            project_name="demo",
+            task_type="storyboard",
+            media_type="image",
+            resource_id="E1S01",
+            payload={},
+            script_file="ep1.json",
+            user_id="user-a",
+        )
+
+        with pytest.raises(ValueError, match="不存在"):
+            await repo.retry_failed_task(task["task_id"], user_id="user-b")
+
+        with pytest.raises(ValueError, match="失败"):
+            await repo.retry_failed_task(task["task_id"], user_id="user-a")
 
     async def test_dependency_cascade_failure(self, db_session):
         repo = TaskRepository(db_session)
@@ -191,6 +421,41 @@ class TestTaskRepository:
 
         result = await repo.list_tasks()
         assert result["total"] == 2
+
+    async def test_read_queries_can_be_scoped_by_user(self, db_session):
+        repo = TaskRepository(db_session)
+
+        task_a = await repo.enqueue(
+            project_name="demo",
+            task_type="storyboard",
+            media_type="image",
+            resource_id="E1S01",
+            payload={},
+            script_file="ep1.json",
+            user_id="user-a",
+        )
+        task_b = await repo.enqueue(
+            project_name="demo",
+            task_type="storyboard",
+            media_type="image",
+            resource_id="E1S02",
+            payload={},
+            script_file="ep1.json",
+            user_id="user-b",
+        )
+
+        visible_to_a = await repo.list_tasks(user_id="user-a")
+        assert visible_to_a["total"] == 1
+        assert visible_to_a["items"][0]["task_id"] == task_a["task_id"]
+
+        assert await repo.get(task_b["task_id"], user_id="user-a") is None
+
+        stats_b = await repo.get_stats(project_name="demo", user_id="user-b")
+        assert stats_b["queued"] == 1
+        assert stats_b["total"] == 1
+
+        events_a = await repo.get_events_since(last_event_id=0, project_name="demo", user_id="user-a")
+        assert [event["data"]["task_id"] for event in events_a] == [task_a["task_id"]]
 
     async def test_task_has_cancelled_by_field(self, db_session):
         repo = TaskRepository(db_session)
@@ -344,6 +609,31 @@ class TestTaskRepository:
 
         task = await repo.get(t2["task_id"])
         assert task["status"] == "cancelled"
+
+    async def test_cancel_all_queued_releases_credit_reservations(self, db_session):
+        repo = TaskRepository(db_session)
+        credit_repo = CreditRepository(db_session, user_id="user-a")
+        await credit_repo.add_entry(amount=1000, kind="grant")
+
+        task = await repo.enqueue(
+            project_name="demo",
+            task_type="storyboard",
+            media_type="image",
+            resource_id="E1S01",
+            payload={},
+            script_file="ep1.json",
+            user_id="user-a",
+        )
+        await credit_repo.reserve_generation_credits(task_id=task["task_id"], amount=67)
+
+        assert await credit_repo.get_reserved_generation_credits() == 67
+        result = await repo.cancel_all_queued("demo", user_id="user-a")
+
+        assert result["cancelled_count"] == 1
+        assert await credit_repo.get_reserved_generation_credits() == 0
+        entries = await credit_repo.list_entries()
+        reservation = next(entry for entry in entries if entry["kind"] == "generation_reservation")
+        assert reservation["status"] == "released"
 
     async def test_get_stats_includes_cancelled(self, db_session):
         repo = TaskRepository(db_session)

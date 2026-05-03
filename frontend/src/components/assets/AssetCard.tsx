@@ -6,19 +6,27 @@ import { AssetThumb } from "./AssetThumb";
 
 interface Props {
   asset: Asset;
+  highlighted?: boolean;
   onEdit: (asset: Asset) => void;
   onDelete: (asset: Asset) => void;
 }
 
 const TYPE_ICON = { character: UserIcon, scene: Landmark, prop: Package };
 
-export function AssetCard({ asset, onEdit, onDelete }: Props) {
+export function AssetCard({ asset, highlighted = false, onEdit, onDelete }: Props) {
   const { t } = useTranslation("assets");
   const Icon = TYPE_ICON[asset.type];
   const imageUrl = API.getGlobalAssetUrl(asset.image_path, asset.updated_at);
 
   return (
-    <div className="group bg-gray-900 border border-gray-800 rounded-lg overflow-hidden hover:border-gray-600 transition-colors">
+    <div
+      data-testid={`asset-card-${asset.id}`}
+      className={`group overflow-hidden rounded-lg border bg-gray-900 transition-colors ${
+        highlighted
+          ? "border-cyan-300/70 shadow-lg shadow-cyan-950/40"
+          : "border-gray-800 hover:border-gray-600"
+      }`}
+    >
       <AssetThumb
         imageUrl={imageUrl}
         alt={asset.name}

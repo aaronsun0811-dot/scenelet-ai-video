@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 from fastapi.sse import ServerSentEvent
 
+from lib.db.base import DEFAULT_USER_ID
 from lib.project_manager import ProjectManager
 from server.agent_runtime.message_utils import extract_plain_user_content
 from server.agent_runtime.models import SessionMeta, SessionStatus
@@ -63,6 +64,11 @@ class AssistantService:
         self._snapshot_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._snapshot_cache_max = 128
         self.stream_heartbeat_seconds = int(os.environ.get("ASSISTANT_STREAM_HEARTBEAT_SECONDS", "20"))
+
+    def _pm_for_user(self, user_id: str | None):
+        if hasattr(self.pm, "for_user"):
+            return self.pm.for_user(user_id or DEFAULT_USER_ID)
+        return self.pm
 
     async def startup(self) -> None:
         """Run async initialization (must be called from event loop)."""
@@ -200,9 +206,10 @@ class AssistantService:
         session_id: str | None = None,
         images: list["ImageAttachment"] | None = None,
         locale: str = "zh",
+        user_id: str = DEFAULT_USER_ID,
     ) -> dict[str, Any]:
         """Unified send: create new session or send to existing one."""
-        self.pm.get_project_path(project_name)  # Validate project
+        self._pm_for_user(user_id).get_project_path(project_name)  # Validate project
 
         if session_id:
             # Existing session
@@ -807,10 +814,15 @@ class AssistantService:
         "compose-video": {"label": "合成视频", "icon": "scissors"},
     }
 
-    def list_available_skills(self, project_name: str | None = None) -> list[dict[str, str]]:
+    def list_available_skills(
+        self,
+        project_name: str | None = None,
+        *,
+        user_id: str = DEFAULT_USER_ID,
+    ) -> list[dict[str, str]]:
         """List available skills."""
         if project_name:
-            self.pm.get_project_path(project_name)
+            self._pm_for_user(user_id).get_project_path(project_name)
 
         source_roots = {
             "agent": self.project_root / "agent_runtime_profile" / ".claude" / "skills",

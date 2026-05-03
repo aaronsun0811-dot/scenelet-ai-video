@@ -19,7 +19,6 @@ import time
 from collections import deque
 from typing import Optional
 
-from .cost_calculator import cost_calculator
 from .retry import BASE_RETRYABLE_ERRORS, with_retry_async
 
 __all__ = [
@@ -173,8 +172,8 @@ class RateLimiter:
                 await asyncio.sleep(0.1)  # 短暂让出控制权
 
 
-_SHARED_IMAGE_MODEL_NAME = cost_calculator.DEFAULT_IMAGE_MODEL
-_SHARED_VIDEO_MODEL_NAME = cost_calculator.DEFAULT_VIDEO_MODEL
+_SHARED_IMAGE_MODEL_NAME = "gemini-3.1-flash-image-preview"
+_SHARED_VIDEO_MODEL_NAME = "veo-3.1-lite-generate-preview"
 
 _shared_rate_limiter: Optional["RateLimiter"] = None
 _shared_rate_limiter_lock = threading.Lock()

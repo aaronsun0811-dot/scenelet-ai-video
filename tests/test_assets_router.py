@@ -114,6 +114,20 @@ class TestAssetsCRUD:
         files_after_dup = list(global_dir.iterdir())
         assert len(files_after_dup) == len(files_after_first), "duplicate upload must not leave orphan files"
 
+    def test_global_asset_path_helpers_stay_inside_global_assets(self, _assets_env):
+        pm = _assets_env["pm"]
+        outside = pm.projects_root / "outside.png"
+        outside.write_bytes(b"outside")
+        valid = pm.get_global_assets_root() / "scene" / "ok.png"
+        valid.write_bytes(b"ok")
+
+        assert assets._global_asset_file_path("../outside.png") is None
+        assert assets._global_asset_file_path("_global_assets/../outside.png") is None
+        assert assets._global_asset_file_path("_global_assets/scene/ok.png", "scene") == valid
+
+        assets._delete_global_asset_file("../outside.png")
+        assert outside.exists()
+
     def test_replace_image(self, _assets_env):
         client = _assets_env["client"]
         r = client.post("/api/v1/assets", data={"type": "scene", "name": "A"})
@@ -283,6 +297,77 @@ class TestFromProject:
         )
         assert r.status_code == 200
         assert r.json()["asset"]["image_path"] is None
+
+
+class TestFromProjectFile:
+    def test_from_project_file_creates_scene_asset(self, _assets_env):
+        client = _assets_env["client"]
+        pm = _assets_env["pm"]
+        pm.create_project("demo")
+        pm.create_project_metadata("demo", "Demo")
+        ref_rel = "travel_references/osaka-map.png"
+        (pm.projects_root / "demo" / "travel_references").mkdir(parents=True, exist_ok=True)
+        (pm.projects_root / "demo" / ref_rel).write_bytes(b"map")
+
+        r = client.post(
+            "/api/v1/assets/from-project-file",
+            json={
+                "project_name": "demo",
+                "file_path": ref_rel,
+                "asset_type": "scene",
+                "name": "osaka-map",
+                "description": "旅游路线参考图",
+            },
+        )
+
+        assert r.status_code == 200, r.text
+        asset = r.json()["asset"]
+        assert asset["type"] == "scene"
+        assert asset["name"] == "osaka-map"
+        assert asset["description"] == "旅游路线参考图"
+        assert asset["source_project"] == "demo"
+        assert asset["image_path"].startswith("_global_assets/scene/")
+        assert (pm.projects_root / asset["image_path"]).read_bytes() == b"map"
+
+    def test_from_project_file_renames_duplicate_by_default(self, _assets_env):
+        client = _assets_env["client"]
+        pm = _assets_env["pm"]
+        pm.create_project("demo")
+        pm.create_project_metadata("demo", "Demo")
+        ref_rel = "travel_references/street.png"
+        (pm.projects_root / "demo" / "travel_references").mkdir(parents=True, exist_ok=True)
+        (pm.projects_root / "demo" / ref_rel).write_bytes(b"street")
+        client.post("/api/v1/assets", data={"type": "scene", "name": "street"})
+
+        r = client.post(
+            "/api/v1/assets/from-project-file",
+            json={
+                "project_name": "demo",
+                "file_path": ref_rel,
+                "asset_type": "scene",
+                "name": "street",
+            },
+        )
+
+        assert r.status_code == 200, r.text
+        assert r.json()["asset"]["name"] == "street 2"
+
+    def test_from_project_file_rejects_unsafe_path(self, _assets_env):
+        client = _assets_env["client"]
+        pm = _assets_env["pm"]
+        pm.create_project("demo")
+        pm.create_project_metadata("demo", "Demo")
+
+        r = client.post(
+            "/api/v1/assets/from-project-file",
+            json={
+                "project_name": "demo",
+                "file_path": "../outside.png",
+                "asset_type": "scene",
+            },
+        )
+
+        assert r.status_code == 400
 
 
 class TestApplyToProject:
@@ -495,3 +580,51 @@ class TestApplyToProject:
         assert (pm.projects_root / "target" / "scenes" / "A.png").exists()
         data = pm.load_project("target")
         assert data["scenes"]["A"]["scene_sheet"] == "scenes/A.png"
+        assert data["scenes"]["A"]["asset_source"]["kind"] == "asset_library"
+        assert data["scenes"]["A"]["asset_source"]["asset_id"] == aid
+
+    def test_travel_reference_apply_records_source_metadata(self, _assets_env):
+        client = _assets_env["client"]
+        pm = _assets_env["pm"]
+        pm.create_project("demo")
+        pm.create_project_metadata("demo", "Demo")
+        pm.create_project("target")
+        pm.create_project_metadata("target", "Target")
+        ref_rel = "travel_references/osaka-map.png"
+        (pm.projects_root / "demo" / "travel_references").mkdir(parents=True, exist_ok=True)
+        (pm.projects_root / "demo" / ref_rel).write_bytes(b"map")
+
+        created = client.post(
+            "/api/v1/assets/from-project-file",
+            json={
+                "project_name": "demo",
+                "file_path": ref_rel,
+                "asset_type": "scene",
+                "name": "osaka-map",
+                "description": f"旅游路线参考图：{ref_rel}",
+            },
+        )
+        assert created.status_code == 200, created.text
+        aid = created.json()["asset"]["id"]
+
+        applied = client.post(
+            "/api/v1/assets/apply-to-project",
+            json={
+                "asset_ids": [aid],
+                "target_project": "target",
+                "conflict_policy": "rename",
+            },
+        )
+        assert applied.status_code == 200, applied.text
+
+        data = pm.load_project("target")
+        scene = data["scenes"]["osaka-map"]
+        assert scene["scene_sheet"] == "scenes/osaka-map.png"
+        assert scene["asset_source"] == {
+            "kind": "asset_library",
+            "asset_id": aid,
+            "asset_type": "scene",
+            "source_kind": "travel_reference",
+            "source_project": "demo",
+            "source_file": ref_rel,
+        }

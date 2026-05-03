@@ -39,6 +39,7 @@ class Task(UserOwnedMixin, Base):
         Index("idx_tasks_dependency_task_id", "dependency_task_id"),
         Index(
             "idx_tasks_dedupe_active",
+            "user_id",
             "project_name",
             "task_type",
             "resource_id",

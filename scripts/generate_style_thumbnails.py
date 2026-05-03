@@ -1,4 +1,4 @@
-"""一次性脚本：用 Grok (Aurora) 生成 36 条风格缩略图。
+"""一次性脚本：用 Grok (Aurora) 生成功能内置的风格缩略图。
 
 运行：
     uv run python scripts/generate_style_thumbnails.py
@@ -28,6 +28,14 @@ CONCURRENCY = 4
 
 # 每个风格的人物主体 + 背景氛围（subject）
 SUBJECTS: dict[str, str] = {
+    # ===== content (7) =====
+    "content_scene_sketch": "三位现代年轻人在公寓客厅自然对话，一人站在白板旁，一人坐在沙发上，背景：温暖室内光与生活化陈设",
+    "content_short_drama": "一位都市女性在办公室走廊情绪爆发，另一位男性背影离开，背景：竖屏短剧式强对比灯光和玻璃门",
+    "content_fiction_adaptation": "一位小说男主角站在雨夜街口，神情克制而紧张，背景：城市霓虹与远处若隐若现的命运线索",
+    "content_narration_story": "一位旁白叙事者站在窗边凝视旧照片，背景：干净安静的房间、柔和逆光和纪实感氛围",
+    "content_ad_story": "一位年轻女性手持精致产品与朋友争执后释然，背景：高级生活方式厨房、商业级柔光与干净台面",
+    "content_education_sketch": "两位主持人在明亮教室里互动讲解，旁边有白板和道具，背景：清晰简洁的知识小剧场布景",
+    "content_travel_video": "一位城市导游站在街景路口指向路线标识，远处有街道、店铺和行进路线，背景：旅行视频式实拍街景和清晰导航节点",
     # ===== live (18) =====
     "live_cinematic_ancient": "一位身着唐代青色广袖长裙的东方女子，眉目清丽，发髻别玉簪，背景：朱红木格窗与暖色烛光的古装内室",
     "live_zhang_yimou": "一位身着大红戏曲华服的东方女子，眉心点朱砂，神情凝重，背景：高墙朱门、成列红灯笼的封闭大院",

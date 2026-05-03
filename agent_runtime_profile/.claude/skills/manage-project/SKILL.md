@@ -83,7 +83,7 @@ python .claude/skills/manage-project/scripts/add_assets.py --characters '{"角�
 python .claude/skills/manage-project/scripts/get_video_capabilities.py --project {项目名}
 ```
 
-**输出 JSON**（stdout）：`provider_id` / `model` / `supported_durations[]` / `max_duration` / `max_reference_images` / `source` / `default_duration` / `content_mode` / `generation_mode`。
+**输出 JSON**（stdout）：`provider_id` / `model` / `supported_durations[]` / `max_duration` / `max_reference_images` / `source` / `default_duration` / `content_type` / `content_mode` / `generation_mode`。
 
 **用途**：所有 generation_mode（storyboard / grid / reference_video）的预处理 subagent 在执行时自查，用于决定单片段 / shot 时长。**决策优先级**：若 `default_duration` 非 null，优先采用为默认值；否则或特殊情况（reference_video 多 shot 组合贴近 `max_duration`、narration 长句需要更长）按规则从 `supported_durations` 选值。
 

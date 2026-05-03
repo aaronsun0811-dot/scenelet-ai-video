@@ -2,9 +2,21 @@ import { act, render, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useScrollTarget } from "@/hooks/useScrollTarget";
 import { useAppStore } from "@/stores/app-store";
+import type { WorkspaceFocusTarget } from "@/types";
 
 function ScrollTargetHarness({ type }: { type: string }) {
   useScrollTarget(type);
+  return null;
+}
+
+function ScrollTargetResolvedHarness({
+  type,
+  onResolved,
+}: {
+  type: string;
+  onResolved: (target: WorkspaceFocusTarget) => void;
+}) {
+  useScrollTarget(type, { onResolved });
   return null;
 }
 
@@ -82,6 +94,35 @@ describe("useScrollTarget", () => {
       await vi.advanceTimersByTimeAsync(3050);
     });
 
+    expect(useAppStore.getState().scrollTarget).toBeNull();
+  });
+
+  it("runs an onResolved callback before clearing a custom target", async () => {
+    const el = document.createElement("div");
+    el.id = "reference-unit-E1U1";
+    Object.defineProperty(el, "scrollIntoView", {
+      value: vi.fn(),
+      writable: true,
+      configurable: true,
+    });
+    document.body.appendChild(el);
+    const onResolved = vi.fn();
+
+    render(<ScrollTargetResolvedHarness type="reference-unit" onResolved={onResolved} />);
+
+    act(() => {
+      useAppStore.getState().triggerScrollTo({
+        type: "reference-unit",
+        id: "E1U1",
+        route: "/episodes/1",
+      });
+    });
+
+    await waitFor(() => {
+      expect(onResolved).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "reference-unit", id: "E1U1" }),
+      );
+    });
     expect(useAppStore.getState().scrollTarget).toBeNull();
   });
 });

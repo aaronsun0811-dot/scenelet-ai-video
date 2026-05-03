@@ -53,6 +53,19 @@ python .claude/skills/manage-project/scripts/get_video_capabilities.py --project
 - `projects/{项目名}/project.json` — 获取 characters / scenes / props 三张表
 - `projects/{项目名}/source/episode_{N}.txt` — 单集原文
 
+同时记录 `content_type`。当 `content_type=ad_story` 时：
+- 先拆出用户痛点/冲突，再拆产品或服务入场，再拆结果变化和行动暗示。
+- 产品、服务、包装、关键使用道具应优先作为 prop 引用；若 project.json 中缺失，应报告主 agent 补资产。
+- 卖点必须通过角色动作、使用结果或对话体现，不要把 shot 写成说明书。
+
+当 `content_type=travel_video` 时，还必须读取并记录 `travel_video_settings`：
+- `route_source`、`origin`、`destination`、`route_notes`
+- `route_preview.route_ready`、`route_preview.summary`、`route_preview.nodes[]`
+- `reference_images[]` 与 `route_preview.reference_images[]`
+- `target_duration` / `custom_duration_seconds`、`camera_style`、`narrator_persona`、`narration_language`
+
+若 `route_preview.route_ready` 不是 true，或者同时缺少“出发地+目的地 / 手动路线说明 / 可用参考图”，停止并报告主 agent：需要先完成旅游路线预检再拆分 video_unit。
+
 ### Step 2: 按 video_unit 粒度拆分
 
 **拆分规则**：
@@ -65,6 +78,15 @@ python .claude/skills/manage-project/scripts/get_video_capabilities.py --project
   不要挑最短/保守值作为默认。
 - 时间/空间/情节重大切换点 → 开一个新 unit。
 - 一个 unit 涉及的角色 / 场景 / 道具总数不得超过 Step 0 查到的 `max_reference_images`；超出时将次要角色融入背景描述，不进入 references。
+
+**旅游视频特殊拆分规则**（`content_type=travel_video`）：
+
+- 按路线推进拆分 unit：出发地建立 → 途经转向/地标 → 接近目的地 → 抵达总结。
+- 优先覆盖 `route_preview.nodes[]` 的顺序；每个关键 route node 至少落到一个 unit 的 shots 摘要里。
+- `route_notes` 是硬约束，不能被小说原文或模型想象覆盖；没有地图数据时，以 `route_notes` + `reference_images` 为路线事实。
+- shot 文本要有方向感：步行/推镜、右转/左转、经过门头/路牌/地标、抵达点；避免跳跃到无关城市或无关街道。
+- 如项目已有“导游/讲解人”角色，优先在合适 unit 引用该角色；没有角色资产时，可以写导游口播视角，但不要发明 `@导游`。
+- 旅游参考图是项目级附加参考，不计入 unit 的 `references` 表；unit.references 仍只能登记 project.json 里的角色/场景/道具。
 
 **描述规则**：
 
@@ -114,6 +136,7 @@ Shot 2 (<d2>s): ...
 | 总 unit 数 | XX 个 |
 | 总 shot 数 | XX 个 |
 | 预计总时长 | X 分 X 秒 |
+| 路线节点覆盖（旅游视频） | 已覆盖 X / Y 个 |
 | 涉及角色 | XX 个 |
 | 涉及场景 | XX 个 |
 | 涉及道具 | XX 个 |
@@ -130,3 +153,5 @@ Shot 2 (<d2>s): ...
 - 每 unit shots 不超过 **4 个**；单 unit references 不超过 Step 0 查到的 `max_reference_images`。
 - 凡是 `@名称` 中的「名称」必须在 project.json 的 characters / scenes / props 三张表之一，否则不要使用；若确实需要新资产，应报告给主 agent 要求补资产生成。
 - 所有 shot 时长从 Step 0 查到的 `supported_durations` 中选；**优先组合使 unit 总时长贴近 `max_duration`**（若 `default_duration` 非 null，单 shot 默认取其值；特殊情况另议）；不要自己发明其它时长，也不要默认挑最短值。
+- 内容类型优先级高于通用 reference_video 规则：广告剧情必须保留痛点、产品入戏和结果变化链路。
+- 内容类型优先级高于通用 reference_video 规则：旅游视频必须按 route_preview / route_notes 的路线事实推进，不能只按普通故事情节拆分。

@@ -58,6 +58,7 @@ class MediaGenerator:
         video_backend=None,
         *,
         config_resolver: Optional["ConfigResolver"] = None,
+        project_config: dict | None = None,
         user_id: str = DEFAULT_USER_ID,
     ):
         """
@@ -69,6 +70,7 @@ class MediaGenerator:
             image_backend: 可选的 ImageBackend 实例（用于图片生成）
             video_backend: 可选的 VideoBackend 实例（用于视频生成）
             config_resolver: ConfigResolver 实例，用于运行时读取配置
+            project_config: 已加载的 project.json，用于避免按项目名重新跨命名空间读取
             user_id: 用户 ID
         """
         self.project_path = Path(project_path)
@@ -77,6 +79,7 @@ class MediaGenerator:
         self._image_backend = image_backend
         self._video_backend = video_backend
         self._config = config_resolver
+        self._project_config = project_config
         self._user_id = user_id
         self.versions = VersionManager(project_path)
 
@@ -387,7 +390,11 @@ class MediaGenerator:
         model_name = self._video_backend.model
         provider_name = self._video_backend.name
         if self._config is not None:
-            configured_generate_audio = await self._config.video_generate_audio(self.project_name)
+            project_config = getattr(self, "_project_config", None)
+            if project_config is not None:
+                configured_generate_audio = await self._config.video_generate_audio_from_project(project_config)
+            else:
+                configured_generate_audio = await self._config.video_generate_audio(self.project_name)
         else:
             from lib.config.resolver import ConfigResolver
 
@@ -405,7 +412,7 @@ class MediaGenerator:
             generate_audio=effective_generate_audio,
             provider=provider_name,
             user_id=self._user_id,
-            segment_id=resource_id if resource_type in ("storyboards", "videos") else None,
+            segment_id=resource_id if resource_type in ("storyboards", "videos", "reference_videos") else None,
         )
 
         try:

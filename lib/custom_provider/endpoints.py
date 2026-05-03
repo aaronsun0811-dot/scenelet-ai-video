@@ -9,19 +9,21 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from importlib import import_module
 from typing import TYPE_CHECKING
 
 from lib.config.url_utils import ensure_google_base_url, ensure_openai_base_url
 from lib.custom_provider.backends import CustomImageBackend, CustomTextBackend, CustomVideoBackend
-from lib.image_backends.gemini import GeminiImageBackend
-from lib.image_backends.openai import OpenAIImageBackend
-from lib.text_backends.gemini import GeminiTextBackend
-from lib.text_backends.openai import OpenAITextBackend
-from lib.video_backends.newapi import NewAPIVideoBackend
-from lib.video_backends.openai import OpenAIVideoBackend
 
 if TYPE_CHECKING:
     from lib.db.models.custom_provider import CustomProvider
+
+OpenAITextBackend = None
+GeminiTextBackend = None
+OpenAIImageBackend = None
+GeminiImageBackend = None
+OpenAIVideoBackend = None
+NewAPIVideoBackend = None
 
 
 # ── EndpointSpec 数据类型 ───────────────────────────────────────────
@@ -41,39 +43,53 @@ class EndpointSpec:
 # ── 各 endpoint 的 build_backend 闭包 ──────────────────────────────
 
 
+def _load_backend_class(global_name: str, module_name: str, class_name: str):
+    backend_cls = globals()[global_name]
+    if backend_cls is None:
+        backend_cls = getattr(import_module(module_name), class_name)
+        globals()[global_name] = backend_cls
+    return backend_cls
+
+
 def _build_openai_chat(provider, model_id: str) -> CustomTextBackend:
+    backend_cls = _load_backend_class("OpenAITextBackend", "lib.text_backends.openai", "OpenAITextBackend")
     base_url = ensure_openai_base_url(provider.base_url)
-    delegate = OpenAITextBackend(api_key=provider.api_key, base_url=base_url, model=model_id)
+    delegate = backend_cls(api_key=provider.api_key, base_url=base_url, model=model_id)
     return CustomTextBackend(provider_id=provider.provider_id, delegate=delegate, model=model_id)
 
 
 def _build_gemini_generate(provider, model_id: str) -> CustomTextBackend:
+    backend_cls = _load_backend_class("GeminiTextBackend", "lib.text_backends.gemini", "GeminiTextBackend")
     base_url = ensure_google_base_url(provider.base_url) or None
-    delegate = GeminiTextBackend(api_key=provider.api_key, base_url=base_url, model=model_id)
+    delegate = backend_cls(api_key=provider.api_key, base_url=base_url, model=model_id)
     return CustomTextBackend(provider_id=provider.provider_id, delegate=delegate, model=model_id)
 
 
 def _build_openai_images(provider, model_id: str) -> CustomImageBackend:
+    backend_cls = _load_backend_class("OpenAIImageBackend", "lib.image_backends.openai", "OpenAIImageBackend")
     base_url = ensure_openai_base_url(provider.base_url)
-    delegate = OpenAIImageBackend(api_key=provider.api_key, base_url=base_url, model=model_id)
+    delegate = backend_cls(api_key=provider.api_key, base_url=base_url, model=model_id)
     return CustomImageBackend(provider_id=provider.provider_id, delegate=delegate, model=model_id)
 
 
 def _build_gemini_image(provider, model_id: str) -> CustomImageBackend:
+    backend_cls = _load_backend_class("GeminiImageBackend", "lib.image_backends.gemini", "GeminiImageBackend")
     base_url = ensure_google_base_url(provider.base_url) or None
-    delegate = GeminiImageBackend(api_key=provider.api_key, base_url=base_url, image_model=model_id)
+    delegate = backend_cls(api_key=provider.api_key, base_url=base_url, image_model=model_id)
     return CustomImageBackend(provider_id=provider.provider_id, delegate=delegate, model=model_id)
 
 
 def _build_openai_video(provider, model_id: str) -> CustomVideoBackend:
+    backend_cls = _load_backend_class("OpenAIVideoBackend", "lib.video_backends.openai", "OpenAIVideoBackend")
     base_url = ensure_openai_base_url(provider.base_url)
-    delegate = OpenAIVideoBackend(api_key=provider.api_key, base_url=base_url, model=model_id)
+    delegate = backend_cls(api_key=provider.api_key, base_url=base_url, model=model_id)
     return CustomVideoBackend(provider_id=provider.provider_id, delegate=delegate, model=model_id)
 
 
 def _build_newapi_video(provider, model_id: str) -> CustomVideoBackend:
+    backend_cls = _load_backend_class("NewAPIVideoBackend", "lib.video_backends.newapi", "NewAPIVideoBackend")
     base_url = ensure_openai_base_url(provider.base_url)
-    delegate = NewAPIVideoBackend(api_key=provider.api_key, base_url=base_url, model=model_id)
+    delegate = backend_cls(api_key=provider.api_key, base_url=base_url, model=model_id)
     return CustomVideoBackend(provider_id=provider.provider_id, delegate=delegate, model=model_id)
 
 

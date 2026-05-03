@@ -1,12 +1,13 @@
 import json
 from io import BytesIO
 
-from fastapi import FastAPI
+import pytest
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from PIL import Image
 
 from lib.project_manager import ProjectManager
-from server.auth import CurrentUserInfo, get_current_user
+from server.auth import CurrentUserInfo, get_current_user, get_current_user_flexible
 from server.routers import files
 
 
@@ -40,7 +41,7 @@ def _img_bytes(fmt="JPEG"):
     return buf.getvalue()
 
 
-def _client(monkeypatch, tmp_path):
+def _client(monkeypatch, tmp_path, *, static_user_id: str | None = "default"):
     pm = ProjectManager(tmp_path / "projects")
     pm.create_project("demo")
     pm.create_project_metadata("demo", "Demo", "Anime", "narration")
@@ -52,6 +53,12 @@ def _client(monkeypatch, tmp_path):
 
     app = FastAPI()
     app.dependency_overrides[get_current_user] = lambda: CurrentUserInfo(id="default", sub="testuser", role="admin")
+    if static_user_id is not None:
+        app.dependency_overrides[get_current_user_flexible] = lambda: CurrentUserInfo(
+            id=static_user_id,
+            sub="testuser",
+            role="admin",
+        )
     app.include_router(files.router, prefix="/api/v1")
     return TestClient(app), pm
 
@@ -125,6 +132,14 @@ class TestFilesRouter:
             )
             assert storyboard.status_code == 200
             assert storyboard.json()["path"] == "storyboards/scene_E1S01.jpg"
+
+            travel_reference = client.post(
+                "/api/v1/projects/demo/upload/travel_reference",
+                files={"file": ("route.webp", _img_bytes("WEBP"), "image/webp")},
+            )
+            assert travel_reference.status_code == 200
+            assert travel_reference.json()["path"].startswith("travel_references/")
+            assert travel_reference.json()["path"].endswith(".webp")
 
             invalid_ext = client.post(
                 "/api/v1/projects/demo/upload/source",
@@ -206,14 +221,33 @@ class TestFilesRouter:
             assert bad_style_ext.status_code == 400
 
     def test_security_and_error_paths(self, tmp_path, monkeypatch):
-        client, _ = _client(monkeypatch, tmp_path)
+        client, pm = _client(monkeypatch, tmp_path)
 
         outside = tmp_path / "projects" / "outside.txt"
         outside.write_text("outside", encoding="utf-8")
+        project_dir = pm.get_project_path("demo")
+        pm.load_project("demo")  # settle legacy style migration before path-traversal assertions
+        project_json_before = (project_dir / "project.json").read_text(encoding="utf-8")
 
         with client:
             traverse = client.get("/api/v1/files/demo/%2E%2E/outside.txt")
             assert traverse.status_code == 403
+
+            methods = [
+                (client.get, {}),
+                (client.put, {"content": "hacked", "headers": {"content-type": "text/plain"}}),
+                (client.delete, {}),
+            ]
+            for method, kwargs in methods:
+                resp = method("/api/v1/projects/demo/source/..%2Fproject.json", **kwargs)
+                assert resp.status_code in (403, 404)
+            assert (project_dir / "project.json").read_text(encoding="utf-8") == project_json_before
+
+            from tests.conftest import make_translator
+
+            with pytest.raises(HTTPException) as exc_info:
+                files._source_file_path(project_dir, "../project.json", make_translator())
+            assert exc_info.value.status_code == 403
 
             missing_project = client.get("/api/v1/projects/missing/files")
             assert missing_project.status_code == 404
@@ -224,6 +258,26 @@ class TestFilesRouter:
                 headers={"content-type": "text/plain"},
             )
             assert missing_source.status_code == 404
+
+    def test_static_file_requires_auth_token(self, tmp_path, monkeypatch):
+        client, pm = _client(monkeypatch, tmp_path, static_user_id=None)
+        project_path = pm.get_project_path("demo")
+        (project_path / "storyboards").mkdir(exist_ok=True)
+        (project_path / "storyboards" / "test.png").write_bytes(b"img")
+
+        with client:
+            resp = client.get("/api/v1/files/demo/storyboards/test.png")
+            assert resp.status_code == 401
+
+    def test_static_file_hides_other_users_project(self, tmp_path, monkeypatch):
+        client, pm = _client(monkeypatch, tmp_path, static_user_id="other-user")
+        project_path = pm.get_project_path("demo")
+        (project_path / "storyboards").mkdir(exist_ok=True)
+        (project_path / "storyboards" / "test.png").write_bytes(b"img")
+
+        with client:
+            resp = client.get("/api/v1/files/demo/storyboards/test.png")
+            assert resp.status_code == 404
 
     def test_upload_without_name_and_keyerror_tolerance(self, tmp_path, monkeypatch):
         client, _ = _client(monkeypatch, tmp_path)
@@ -255,6 +309,25 @@ class TestFilesRouter:
             )
             assert storyboard_no_name.status_code == 200
             assert storyboard_no_name.json()["path"] == "storyboards/board.jpg"
+
+    def test_upload_rejects_path_like_asset_name(self, tmp_path, monkeypatch):
+        client, pm = _client(monkeypatch, tmp_path)
+        project_dir = pm.get_project_path("demo")
+
+        with client:
+            resp = client.post(
+                "/api/v1/projects/demo/upload/character?name=../evil",
+                files={"file": ("alice.jpg", _img_bytes("JPEG"), "image/jpeg")},
+            )
+            assert resp.status_code == 400
+            assert not (project_dir / "evil.jpg").exists()
+
+            fallback = client.post(
+                "/api/v1/projects/demo/upload/storyboard",
+                files={"file": ("../board.jpg", _img_bytes("JPEG"), "image/jpeg")},
+            )
+            assert fallback.status_code == 200
+            assert fallback.json()["path"] == "storyboards/board.jpg"
 
     def test_source_decode_and_draft_mode_helpers(self, tmp_path, monkeypatch):
         client, pm = _client(monkeypatch, tmp_path)
@@ -444,6 +517,7 @@ class TestFilesRouter:
             assert resp.status_code == 200
             mock_emit.assert_called_once()
             args = mock_emit.call_args
+            assert args.kwargs["user_id"] == "default"
             change = args[0][1][0]  # second positional arg, first item in list
             assert change["entity_type"] == "draft"
             assert change["action"] == "created"
