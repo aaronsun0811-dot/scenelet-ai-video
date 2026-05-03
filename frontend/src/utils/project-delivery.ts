@@ -67,7 +67,11 @@ export function isEpisodeTask(task: TaskItem, projectName: string, episode: Epis
 
 export function countMissingVideoThumbnails(script: EpisodeScript | null): number {
   if (!script) return 0;
-  const items = script.content_mode === "narration" ? script.segments : script.scenes;
+  const items = script.content_mode === "narration"
+    ? script.segments ?? []
+    : script.content_mode === "reference_video"
+      ? script.video_units ?? []
+      : script.scenes ?? [];
   return items.filter((item) => (
     Boolean(item.generated_assets?.video_clip) &&
     !item.generated_assets?.video_thumbnail

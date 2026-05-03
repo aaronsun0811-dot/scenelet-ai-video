@@ -222,11 +222,16 @@ export function GenerationPreflightDialog({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 px-4">
-      <div className="w-full max-w-lg rounded-2xl border border-gray-800 bg-gray-900 p-6 shadow-2xl shadow-black/40">
-        <div className="flex items-start justify-between gap-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 px-4 py-4">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="generation-preflight-title"
+        className="flex max-h-[calc(100vh-2rem)] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-gray-800 bg-gray-900 shadow-2xl shadow-black/40"
+      >
+        <div className="flex shrink-0 items-start justify-between gap-4 p-6 pb-4">
           <div>
-            <h2 className="text-lg font-semibold text-gray-100">
+            <h2 id="generation-preflight-title" className="text-lg font-semibold text-gray-100">
               {t("dashboard:generation_preflight_title")}
             </h2>
             <p className="mt-2 text-sm leading-6 text-gray-400">
@@ -244,50 +249,51 @@ export function GenerationPreflightDialog({
           </button>
         </div>
 
-        <div className="mt-5 grid gap-2 sm:grid-cols-2">
-          <div className="rounded-lg bg-black/20 px-3 py-2">
-            <p className="text-xs text-gray-500">{t("dashboard:generation_preflight_task")}</p>
-            <p className="mt-1 truncate text-sm font-medium text-gray-100">
-              {targetLabel || result.resource_id || result.task_type}
-            </p>
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-5">
+          <div className="grid gap-2 sm:grid-cols-2">
+            <div className="rounded-lg bg-black/20 px-3 py-2">
+              <p className="text-xs text-gray-500">{t("dashboard:generation_preflight_task")}</p>
+              <p className="mt-1 truncate text-sm font-medium text-gray-100">
+                {targetLabel || result.resource_id || result.task_type}
+              </p>
+            </div>
+            <div className="rounded-lg bg-black/20 px-3 py-2">
+              <p className="text-xs text-gray-500">{t("dashboard:generation_preflight_billing")}</p>
+              <p className="mt-1 text-sm font-medium text-gray-100">
+                {isPlatformCredits
+                  ? t("dashboard:generation_preflight_billing_platform")
+                  : t("dashboard:generation_preflight_billing_byok")}
+              </p>
+            </div>
+            <div className="rounded-lg bg-black/20 px-3 py-2">
+              <p className="text-xs text-gray-500">{t("dashboard:generation_preflight_required")}</p>
+              <p className="mt-1 font-mono text-sm text-gray-100">
+                {isPlatformCredits
+                  ? t("dashboard:generation_preflight_credit_count", {
+                    count: formatCredits(result.required_credits),
+                  })
+                  : t("dashboard:generation_preflight_no_platform_charge")}
+              </p>
+            </div>
+            <div className="rounded-lg bg-black/20 px-3 py-2">
+              <p className="text-xs text-gray-500">{t("dashboard:generation_preflight_available")}</p>
+              <p className="mt-1 font-mono text-sm text-gray-100">
+                {isPlatformCredits
+                  ? t("dashboard:generation_preflight_credit_count", {
+                    count: formatCredits(result.available_balance),
+                  })
+                  : "-"}
+              </p>
+            </div>
           </div>
-          <div className="rounded-lg bg-black/20 px-3 py-2">
-            <p className="text-xs text-gray-500">{t("dashboard:generation_preflight_billing")}</p>
-            <p className="mt-1 text-sm font-medium text-gray-100">
-              {isPlatformCredits
-                ? t("dashboard:generation_preflight_billing_platform")
-                : t("dashboard:generation_preflight_billing_byok")}
-            </p>
-          </div>
-          <div className="rounded-lg bg-black/20 px-3 py-2">
-            <p className="text-xs text-gray-500">{t("dashboard:generation_preflight_required")}</p>
-            <p className="mt-1 font-mono text-sm text-gray-100">
-              {isPlatformCredits
-                ? t("dashboard:generation_preflight_credit_count", {
-                  count: formatCredits(result.required_credits),
-                })
-                : t("dashboard:generation_preflight_no_platform_charge")}
-            </p>
-          </div>
-          <div className="rounded-lg bg-black/20 px-3 py-2">
-            <p className="text-xs text-gray-500">{t("dashboard:generation_preflight_available")}</p>
-            <p className="mt-1 font-mono text-sm text-gray-100">
-              {isPlatformCredits
-                ? t("dashboard:generation_preflight_credit_count", {
-                  count: formatCredits(result.available_balance),
-                })
-                : "-"}
-            </p>
-          </div>
-        </div>
 
-        {result.checks && result.checks.length > 0 && (
-          <div className="mt-4 rounded-xl border border-gray-800 bg-black/15 p-3">
-            <p className="text-xs font-medium uppercase tracking-wide text-gray-500">
-              {t("dashboard:generation_preflight_checks")}
-            </p>
-            <div className="mt-2 space-y-2">
-              {result.checks.map((item) => {
+          {result.checks && result.checks.length > 0 && (
+            <div className="mt-4 rounded-xl border border-gray-800 bg-black/15 p-3">
+              <p className="text-xs font-medium uppercase tracking-wide text-gray-500">
+                {t("dashboard:generation_preflight_checks")}
+              </p>
+              <div className="mt-2 space-y-2">
+                {result.checks.map((item) => {
                 const modelRulePayload = getModelRulePayload(item);
                 const modelRuleDetails = modelRulePayload ? modelRuleDetailItems(modelRulePayload, t) : [];
                 return (
@@ -344,63 +350,66 @@ export function GenerationPreflightDialog({
                   </div>
                 );
               })}
+              </div>
             </div>
+          )}
+
+          {actionSuccessMessage && (
+            <div className="mt-4 rounded-xl border border-emerald-400/25 bg-emerald-500/10 px-3 py-2 text-sm leading-6 text-emerald-100">
+              {actionSuccessMessage}
+            </div>
+          )}
+
+          {(result.blocking.length > 0 || result.warnings.length > 0) && (
+            <div className="mt-4 space-y-2">
+              {result.blocking.map((item) => (
+                <p
+                  key={`${item.code}-${item.message}`}
+                  className="rounded-lg border border-red-400/20 bg-red-500/10 px-3 py-2 text-sm leading-6 text-red-100"
+                >
+                  {item.message}
+                </p>
+              ))}
+              {result.warnings.map((item) => (
+                <p
+                  key={`${item.code}-${item.message}`}
+                  className="rounded-lg border border-amber-400/20 bg-amber-500/10 px-3 py-2 text-sm leading-6 text-amber-100"
+                >
+                  {item.message}
+                </p>
+              ))}
+            </div>
+          )}
+
+          {isPlatformCredits && (
+            <p className="mt-4 text-xs leading-5 text-gray-500">
+              {t("dashboard:generation_preflight_reserve_note", {
+                reserved: formatCredits(result.reserved_generation_credits),
+              })}
+            </p>
+          )}
+        </div>
+
+        <div className="shrink-0 border-t border-gray-800 bg-gray-900/95 px-6 py-4">
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <button
+              type="button"
+              onClick={onCancel}
+              className="inline-flex h-10 items-center justify-center rounded-lg border border-gray-700 px-4 text-sm text-gray-300 transition-colors hover:bg-gray-800 hover:text-white"
+            >
+              {t("common:cancel")}
+            </button>
+            <button
+              type="button"
+              onClick={onConfirm}
+              disabled={!result.can_submit}
+              className="inline-flex h-10 items-center justify-center rounded-lg bg-indigo-600 px-4 text-sm font-medium text-white transition-colors hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {result.can_submit
+                ? t("dashboard:generation_preflight_confirm")
+                : t("dashboard:generation_preflight_blocked")}
+            </button>
           </div>
-        )}
-
-        {actionSuccessMessage && (
-          <div className="mt-4 rounded-xl border border-emerald-400/25 bg-emerald-500/10 px-3 py-2 text-sm leading-6 text-emerald-100">
-            {actionSuccessMessage}
-          </div>
-        )}
-
-        {(result.blocking.length > 0 || result.warnings.length > 0) && (
-          <div className="mt-4 space-y-2">
-            {result.blocking.map((item) => (
-              <p
-                key={`${item.code}-${item.message}`}
-                className="rounded-lg border border-red-400/20 bg-red-500/10 px-3 py-2 text-sm leading-6 text-red-100"
-              >
-                {item.message}
-              </p>
-            ))}
-            {result.warnings.map((item) => (
-              <p
-                key={`${item.code}-${item.message}`}
-                className="rounded-lg border border-amber-400/20 bg-amber-500/10 px-3 py-2 text-sm leading-6 text-amber-100"
-              >
-                {item.message}
-              </p>
-            ))}
-          </div>
-        )}
-
-        {isPlatformCredits && (
-          <p className="mt-4 text-xs leading-5 text-gray-500">
-            {t("dashboard:generation_preflight_reserve_note", {
-              reserved: formatCredits(result.reserved_generation_credits),
-            })}
-          </p>
-        )}
-
-        <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-          <button
-            type="button"
-            onClick={onCancel}
-            className="inline-flex h-10 items-center justify-center rounded-lg border border-gray-700 px-4 text-sm text-gray-300 transition-colors hover:bg-gray-800 hover:text-white"
-          >
-            {t("common:cancel")}
-          </button>
-          <button
-            type="button"
-            onClick={onConfirm}
-            disabled={!result.can_submit}
-            className="inline-flex h-10 items-center justify-center rounded-lg bg-indigo-600 px-4 text-sm font-medium text-white transition-colors hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {result.can_submit
-              ? t("dashboard:generation_preflight_confirm")
-              : t("dashboard:generation_preflight_blocked")}
-          </button>
         </div>
       </div>
     </div>

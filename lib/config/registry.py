@@ -728,7 +728,7 @@ PROVIDER_REGISTRY: dict[str, ProviderMeta] = {
                 media_type="video",
                 capabilities=["text_to_video", "image_to_video", "generate_audio", "seed_control"],
                 default=True,
-                supported_durations=[4, 6, 8, 10],
+                supported_durations=[4, 6, 8, 10, 15],
                 resolutions=["480p", "720p", "1080p"],
             ),
         },

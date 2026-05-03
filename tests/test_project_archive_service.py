@@ -849,6 +849,17 @@ class TestProjectArchiveService:
         assert "GitHub Skill" in audit_markdown
         assert "cinematic-skill" in audit_markdown
 
+    def test_run_async_does_not_dispose_global_database_pool(self, monkeypatch):
+        def fail_if_called():
+            raise AssertionError("export preflight must not dispose the live server DB pool")
+
+        async def load():
+            return ["ok"]
+
+        monkeypatch.setattr("lib.db.engine.dispose_pool", fail_if_called)
+
+        assert ProjectArchiveService._run_async(load) == ["ok"]
+
     def test_export_manifest_uses_content_type_workflow_defaults(self, tmp_path):
         pm = ProjectManager(tmp_path / "projects")
         _create_project(pm)

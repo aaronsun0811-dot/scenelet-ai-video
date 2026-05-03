@@ -850,30 +850,38 @@ class ProjectArchiveService:
             return []
 
         async def load() -> list[dict[str, Any]]:
-            from lib.db.engine import safe_session_factory
+            from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+            from lib.db.engine import get_database_url
             from lib.db.repositories.task_repo import TaskRepository
 
-            async with safe_session_factory() as session:
-                repo = TaskRepository(session)
-                result = await repo.list_tasks(
-                    project_name=project_name,
-                    user_id=user_id,
-                    page=1,
-                    page_size=500,
-                )
-                items = result.get("items")
-                return items if isinstance(items, list) else []
+            url = get_database_url()
+            connect_args = {"timeout": 30} if url.startswith("sqlite") else {}
+            engine = create_async_engine(
+                url,
+                echo=False,
+                pool_pre_ping=True,
+                connect_args=connect_args,
+            )
+            try:
+                session_factory = async_sessionmaker(engine, expire_on_commit=False)
+                async with session_factory() as session:
+                    repo = TaskRepository(session)
+                    result = await repo.list_tasks(
+                        project_name=project_name,
+                        user_id=user_id,
+                        page=1,
+                        page_size=500,
+                    )
+                    items = result.get("items")
+                    return items if isinstance(items, list) else []
+            finally:
+                await engine.dispose()
 
         return self._run_async(load)
 
     @staticmethod
     def _run_async(coro_factory):
-        def run():
-            from lib.db.engine import dispose_pool
-
-            dispose_pool()
-            return asyncio.run(coro_factory())
-
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -883,8 +891,8 @@ class ProjectArchiveService:
             import concurrent.futures
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                return pool.submit(run).result()
-        return run()
+                return pool.submit(lambda: asyncio.run(coro_factory())).result()
+        return asyncio.run(coro_factory())
 
     @classmethod
     def _model_rule_audit_from_tasks(

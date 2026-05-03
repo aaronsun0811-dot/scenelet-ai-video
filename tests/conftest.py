@@ -2,7 +2,34 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from collections.abc import Callable
+
+from fastapi.testclient import TestClient
+
+
+_ORIGINAL_TEST_CLIENT_EXIT = TestClient.__exit__
+
+
+def _closing_test_client_exit(self: TestClient, *args: object) -> None:
+    """Close TestClient's httpx transport after Starlette lifespan cleanup.
+
+    Starlette's TestClient context manager closes the lifespan portal, but the
+    inherited httpx transport is closed by ``close()``.  In wide pytest runs the
+    leftover transport can keep socket pairs and an event loop alive until GC,
+    which shows up as ResourceWarning noise in unrelated later tests.
+    """
+
+    try:
+        _ORIGINAL_TEST_CLIENT_EXIT(self, *args)
+    finally:
+        self.close()
+
+
+if getattr(TestClient.__exit__, "_arcreel_closes_transport", False) is not True:
+    _closing_test_client_exit._arcreel_closes_transport = True  # type: ignore[attr-defined]
+    TestClient.__exit__ = _closing_test_client_exit  # type: ignore[method-assign]
 
 
 def make_translator(locale: str = "zh") -> Callable[..., str]:
@@ -26,6 +53,29 @@ import lib.generation_queue as generation_queue_module
 from lib.db.base import Base
 from server.agent_runtime.session_manager import SessionManager
 from server.agent_runtime.session_store import SessionMetaStore
+
+
+@pytest.fixture(autouse=True)
+def _close_leaked_default_event_loop():
+    """Close a non-running default loop left on the event-loop policy.
+
+    Some sync test helpers (notably TestClient/anyio combinations) can leave a
+    selector loop attached to the main-thread policy after their own cleanup.
+    Pytest may then collect it during an unrelated later async test and emit an
+    "unclosed event loop" ResourceWarning.  Inspecting the policy slot avoids
+    calling get_event_loop(), which would create a new loop just to clean up.
+    """
+
+    yield
+
+    policy = asyncio.get_event_loop_policy()
+    local = getattr(policy, "_local", None)
+    loop = getattr(local, "_loop", None)
+    if loop is None or loop.is_closed() or loop.is_running():
+        return
+    loop.close()
+    with contextlib.suppress(Exception):
+        policy.set_event_loop(None)
 
 # ---------------------------------------------------------------------------
 # General utilities

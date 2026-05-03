@@ -293,8 +293,10 @@ export function GlobalHeader({ onNavigateBack }: GlobalHeaderProps) {
 
 
   // Format content mode badge text
-  const modeBadgeText =
-    contentMode === "drama" ? t("dashboard:mode_badge_drama") : t("dashboard:mode_badge_narration");
+  const modeLabel = contentMode === "drama" ? t("dashboard:mode_badge_drama") : t("dashboard:mode_badge_narration");
+  const aspectRatioLabel =
+    typeof currentProjectData?.aspect_ratio === "string" ? currentProjectData.aspect_ratio : "";
+  const modeBadgeText = aspectRatioLabel ? `${modeLabel} ${aspectRatioLabel}` : modeLabel;
 
   // Format cost display – show multi-currency summary
   const costByCurrency = usageStats?.cost_by_currency ?? {};

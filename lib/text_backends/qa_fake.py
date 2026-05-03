@@ -99,12 +99,7 @@ def _plain_text_response(prompt: str) -> str:
 def _structured_response(schema: dict | type, prompt: str) -> dict[str, Any]:
     schema_name = getattr(schema, "__name__", "")
     if schema_name == "ProjectOverview":
-        return {
-            "synopsis": "林遥带着红色行李箱来到城市路口，准备完成一次路线明确的任务。冲突来自时间压力和路线选择，结尾留下下一步行动。",
-            "genre": "QA短剧",
-            "theme": "目标、选择与行动",
-            "world_setting": "现代城市街区，街道路牌清晰，适合竖屏短剧、横屏情景剧和旅游路线视频复用。",
-        }
+        return _project_overview(prompt)
     if schema_name == "GeneratedCharactersResult":
         return {
             "characters": [
@@ -138,8 +133,43 @@ def _structured_response(schema: dict | type, prompt: str) -> dict[str, Any]:
     if schema_name == "DramaEpisodeScript":
         return _drama_script()
     if schema_name == "ReferenceVideoScript":
-        return _reference_video_script()
+        return _reference_video_script(prompt)
     return _example_from_schema(resolve_schema(schema))
+
+
+def _project_overview(prompt: str) -> dict[str, str]:
+    lowered = prompt.lower()
+    origin = _prompt_field(prompt, "出发地") or "出发地"
+    destination = _prompt_field(prompt, "目的地") or "目的地"
+    route_notes = _prompt_field(prompt, "路线/街景补充")
+    is_travel = (
+        "travel_video" in lowered
+        or "旅游视频" in prompt
+        or "路线视频" in prompt
+        or "route_source" in lowered
+        or ("出发地" in prompt and "目的地" in prompt)
+    )
+    if is_travel:
+        route_summary = route_notes or f"从{origin}出发，沿街景和路牌线索前往{destination}。"
+        return {
+            "synopsis": f"这是一条从{origin}前往{destination}的 QA 旅游路线视频。内容以出发确认、沿途转向、接近目的地和抵达总结推进，结合参考图保持道路、路牌、人流和入口线索清晰，方便后续生成连续的导游口播镜头。",
+            "genre": "QA旅游视频",
+            "theme": "路线识别、街景引导与目的地抵达",
+            "world_setting": f"现代城市步行街区，路线素材围绕{route_summary}展开，适合横屏或竖屏旅游讲解视频验收。",
+        }
+    if "scene_drama" in lowered or "情景剧" in prompt:
+        return {
+            "synopsis": "林遥带着红色行李箱来到城市路口，在一段轻量情景对话中确认目标和下一步行动。冲突来自时间压力与路线选择，结尾以明确决定推动下一场。",
+            "genre": "QA情景剧",
+            "theme": "对话、选择与行动",
+            "world_setting": "现代城市街区，路牌、街角和行李箱构成可复用的情景剧表演空间。",
+        }
+    return {
+        "synopsis": "林遥带着红色行李箱来到城市路口，准备完成一次路线明确的任务。冲突来自时间压力和路线选择，结尾留下下一步行动。",
+        "genre": "QA短剧",
+        "theme": "目标、选择与行动",
+        "world_setting": "现代城市街区，街道路牌清晰，适合竖屏短剧、横屏情景剧和旅游路线视频复用。",
+    }
 
 
 def _composition() -> dict[str, str]:
@@ -227,24 +257,64 @@ def _drama_script() -> dict[str, Any]:
     }
 
 
-def _reference_video_script() -> dict[str, Any]:
+def _prompt_field(prompt: str, label: str) -> str:
+    match = re.search(rf"[-*]\s*{re.escape(label)}[:：]\s*([^\n\r]+)", prompt)
+    return match.group(1).strip() if match else ""
+
+
+def _target_seconds(prompt: str) -> int:
+    patterns = (
+        r"目标时长[:：]\s*(?:任意长度\s*)?(\d+)\s*s",
+        r"target[_\s-]*duration[^0-9]*(\d+)\s*s",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, prompt, flags=re.IGNORECASE)
+        if match:
+            return max(4, min(int(match.group(1)), 60))
+    return 10
+
+
+def _shot_durations(total_seconds: int) -> list[int]:
+    remaining = max(4, min(total_seconds, 60))
+    durations: list[int] = []
+    while remaining > 0 and len(durations) < 4:
+        duration = min(15, remaining)
+        durations.append(duration)
+        remaining -= duration
+    return durations or [4]
+
+
+def _reference_video_script(prompt: str) -> dict[str, Any]:
+    origin = _prompt_field(prompt, "出发地") or "出发地"
+    destination = _prompt_field(prompt, "目的地") or "目的地"
+    route_notes = _prompt_field(prompt, "路线/街景补充")
+    total_seconds = _target_seconds(prompt)
+    durations = _shot_durations(total_seconds)
+    shot_templates = [
+        f"从{origin}出发，确认路牌和街景方向，导游口播说明前往{destination}的路线。",
+        route_notes or f"沿途持续观察道路、路牌和街边建筑，保持向{destination}推进的方向感。",
+        f"接近{destination}前，镜头强调转弯、人流和目的地入口线索。",
+        f"抵达{destination}，总结从{origin}到{destination}的步行路线和观看提示。",
+    ]
+    shots = [
+        {
+            "duration": duration,
+            "text": shot_templates[index] if index < len(shot_templates) else shot_templates[-1],
+        }
+        for index, duration in enumerate(durations)
+    ]
     return {
         "title": "QA旅游路线测试集",
         "content_mode": "reference_video",
-        "duration_seconds": 4,
-        "summary": "沿城市路线出发，结合参考图保持街景和方向感。",
+        "duration_seconds": sum(durations),
+        "summary": f"从{origin}前往{destination}，结合参考图保持街景和方向感。",
         "novel": {"title": "QA素材", "chapter": "第1集"},
         "video_units": [
             {
                 "unit_id": "E1U01",
-                "shots": [
-                    {
-                        "duration": 4,
-                        "text": "从城市路口出发，路牌、街景和行进方向清晰，导游口播提示下一段路线。",
-                    }
-                ],
+                "shots": shots,
                 "references": [],
-                "duration_seconds": 4,
+                "duration_seconds": sum(durations),
                 "duration_override": False,
                 "transition_to_next": "cut",
                 "note": "QA fake reference-video unit",

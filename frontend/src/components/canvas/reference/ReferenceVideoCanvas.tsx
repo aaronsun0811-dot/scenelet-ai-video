@@ -480,6 +480,7 @@ export function ReferenceVideoCanvas({ projectName, episode, episodeTitle }: Ref
   // false，遗留项会重新激活，按钮卡在 busy 直到切换 unit 或刷新。对单会话
   // 典型规模（十到数百 unit）可接受；相比显式 pruning，派生逻辑更简单。
   const [optimisticUnitIds, setOptimisticUnitIds] = useState<Set<string>>(() => new Set());
+  const refreshedTaskIdsRef = useRef<Set<string>>(new Set());
   const isPlatformCreditsProject = project?.billing_mode === "platform_credits";
   const ensureGenerationCredits = useCallback(async () => {
     if (!isPlatformCreditsProject) return true;
@@ -516,6 +517,8 @@ export function ReferenceVideoCanvas({ projectName, episode, episodeTitle }: Ref
   useEffect(() => {
     const prev = prevTaskStatusRef.current;
     const next = new Map<string, TaskStatus>();
+    const terminalUnitIds = new Set<string>();
+    let shouldReloadUnits = false;
     for (const tk of relevantTasks) {
       const before = prev.get(tk.task_id);
       if (tk.status === "failed" && before !== undefined && before !== "failed") {
@@ -527,10 +530,27 @@ export function ReferenceVideoCanvas({ projectName, episode, episodeTitle }: Ref
           "error",
         );
       }
+      if (tk.status === "succeeded" || tk.status === "failed" || tk.status === "cancelled") {
+        terminalUnitIds.add(tk.resource_id);
+      }
+      if (tk.status === "succeeded" && !refreshedTaskIdsRef.current.has(tk.task_id)) {
+        refreshedTaskIdsRef.current.add(tk.task_id);
+        shouldReloadUnits = true;
+      }
       next.set(tk.task_id, tk.status);
     }
     prevTaskStatusRef.current = next;
-  }, [relevantTasks, t]);
+    if (terminalUnitIds.size > 0) {
+      setOptimisticUnitIds((current) => {
+        const nextIds = new Set(current);
+        for (const unitId of terminalUnitIds) nextIds.delete(unitId);
+        return nextIds.size === current.size ? current : nextIds;
+      });
+    }
+    if (shouldReloadUnits) {
+      void loadUnits(projectName, episode);
+    }
+  }, [episode, loadUnits, projectName, relevantTasks, t]);
 
   // "optimistic 置位 且 队列尚无对应行" OR "队列里就在 queued/running"——
   // 前者覆盖 POST→首次 poll 的 3s 空窗，后者覆盖正常运行期。队列接力后
@@ -976,7 +996,7 @@ export function ReferenceVideoCanvas({ projectName, episode, episodeTitle }: Ref
 
   return (
     <>
-    <div className="@container flex h-full flex-col">
+      <div className="@container flex h-full min-h-0 flex-col overflow-y-auto">
       <div className="px-4 py-3">
         <h2 className="text-lg font-semibold text-gray-100">
           <span translate="no">E{episode}</span>
@@ -1006,14 +1026,14 @@ export function ReferenceVideoCanvas({ projectName, episode, episodeTitle }: Ref
             {error}
           </p>
         )}
-          <TravelReferenceDeliveryPanel projectName={projectName} project={project} units={units} />
+        <TravelReferenceDeliveryPanel projectName={projectName} project={project} units={units} />
       </div>
       {/* 外层 grid：<@md(448px) 单列；@md+ 双栏 (UnitList | 右侧 wrapper)。
           断点选 @md 是因为 agent chat 占右半屏时中栏常在 500-700px 区间，@2xl(672px) 错过太多场景。
           单列模式显式两行：UnitList 固 40%（不超过，最少 160px），editor wrapper 拿剩余 1fr——
           否则两个子元素只有 1 个定义行、第二个落进隐式 auto 行，flex-1 链塌到 0，
           textarea 在窄屏完全不可见（#368 后续回归）。@md+ 切回 2 列 × 1 行。 */}
-      <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(160px,40%)_minmax(0,1fr)] overflow-hidden @md:grid-cols-[minmax(200px,30%)_1fr] @md:grid-rows-[minmax(0,1fr)]">
+      <div className="grid min-h-[420px] flex-1 grid-cols-1 grid-rows-[minmax(160px,40%)_minmax(0,1fr)] overflow-hidden @md:grid-cols-[minmax(200px,30%)_1fr] @md:grid-rows-[minmax(0,1fr)]">
         <UnitList
           units={units}
           selectedId={selectedUnitId}

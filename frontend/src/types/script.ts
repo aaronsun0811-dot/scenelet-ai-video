@@ -5,6 +5,8 @@
  * - lib/script_models.py (NarrationSegment, DramaScene, ImagePrompt, VideoPrompt, etc.)
  */
 
+import type { ReferenceVideoScript } from "./reference-video";
+
 export const SHOT_TYPES = [
   "Extreme Close-up",
   "Close-up",
@@ -152,4 +154,4 @@ export interface DramaEpisodeScript {
   scenes: DramaScene[];
 }
 
-export type EpisodeScript = NarrationEpisodeScript | DramaEpisodeScript;
+export type EpisodeScript = NarrationEpisodeScript | DramaEpisodeScript | ReferenceVideoScript;

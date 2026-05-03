@@ -340,6 +340,7 @@ describe("ReferenceVideoCanvas", () => {
     const { container } = render(<ReferenceVideoCanvas projectName="proj" episode={1} />);
     await waitFor(() => expect(screen.getByTestId("unit-row-E1U1")).toBeInTheDocument());
     expect((container.firstChild as HTMLElement).className).toMatch(/@container/);
+    expect((container.firstChild as HTMLElement).className).toMatch(/overflow-y-auto/);
     const tabs = screen.getAllByRole("tab");
     expect(tabs).toHaveLength(2);
     expect(tabs[0]).toHaveAttribute("aria-selected", "true"); // default editor
@@ -490,6 +491,51 @@ describe("ReferenceVideoCanvas", () => {
       expect(genSpy).not.toHaveBeenCalled();
       expect(useAppStore.getState().toast?.text).toContain("已在队列中");
     });
+  });
+
+  it("refreshes reference units after a generation task succeeds", async () => {
+    const ready = mkUnit("E1U1");
+    ready.generated_assets.video_clip = "reference_videos/E1U1.mp4";
+    ready.generated_assets.status = "completed";
+    const listSpy = vi.spyOn(API, "listReferenceVideoUnits")
+      .mockResolvedValueOnce({ units: [mkUnit("E1U1")] })
+      .mockResolvedValueOnce({ units: [ready] });
+
+    render(<ReferenceVideoCanvas projectName="proj" episode={1} />);
+    await waitFor(() => expect(screen.getByTestId("unit-row-E1U1")).toBeInTheDocument());
+
+    act(() => {
+      useTasksStore.setState({
+        tasks: [
+          makeTask({
+            status: "succeeded",
+            resource_id: "E1U1",
+            task_id: "t-success-1",
+            finished_at: "2026-04-20T10:00:00Z",
+          }),
+        ],
+      });
+    });
+
+    await waitFor(() => {
+      expect(listSpy).toHaveBeenCalledTimes(2);
+      expect(screen.getByRole("button", { name: /Videos Complete|视频已齐/ })).toBeDisabled();
+    });
+
+    act(() => {
+      useTasksStore.setState({
+        tasks: [
+          makeTask({
+            status: "succeeded",
+            resource_id: "E1U1",
+            task_id: "t-success-1",
+            finished_at: "2026-04-20T10:00:00Z",
+          }),
+        ],
+      });
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(listSpy).toHaveBeenCalledTimes(2);
   });
 
   it("prevents reference generation when platform-credit balance is too low", async () => {

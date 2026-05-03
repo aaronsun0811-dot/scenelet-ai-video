@@ -45,10 +45,19 @@ export function resolveSegmentPrompt(
   if (!resolvedFile) return null;
   const script = getScriptByFileKey(scripts, scriptFile ?? firstFile);
   if (!script) return null;
+  if (script.content_mode === "reference_video") {
+    const unit = (script.video_units ?? []).find((u) => u.unit_id === segmentId);
+    return {
+      resolvedFile,
+      prompt: unit ? unit.shots.map((shot) => shot.text).join("\n") : "",
+      duration: unit?.duration_seconds ?? 4,
+    };
+  }
+
   const seg =
     script.content_mode === "narration"
-      ? script.segments.find((s) => s.segment_id === segmentId)
-      : script.scenes.find((s) => s.scene_id === segmentId);
+      ? (script.segments ?? []).find((s) => s.segment_id === segmentId)
+      : (script.scenes ?? []).find((s) => s.scene_id === segmentId);
   return {
     resolvedFile,
     prompt: seg?.[field] ?? "",
@@ -58,7 +67,7 @@ export function resolveSegmentPrompt(
 
 export function getScriptGenerationItems(script: EpisodeScript): ScriptGenerationItem[] {
   if (script.content_mode === "narration") {
-    return script.segments.map((segment) => ({
+    return (script.segments ?? []).map((segment) => ({
       id: segment.segment_id,
       imagePrompt: segment.image_prompt,
       videoPrompt: segment.video_prompt,
@@ -68,7 +77,18 @@ export function getScriptGenerationItems(script: EpisodeScript): ScriptGeneratio
     }));
   }
 
-  return script.scenes.map((scene) => ({
+  if (script.content_mode === "reference_video") {
+    return (script.video_units ?? []).map((unit) => ({
+      id: unit.unit_id,
+      imagePrompt: "",
+      videoPrompt: unit.shots.map((shot) => shot.text).join("\n"),
+      duration: unit.duration_seconds,
+      hasStoryboard: false,
+      hasVideo: Boolean(unit.generated_assets?.video_clip),
+    }));
+  }
+
+  return (script.scenes ?? []).map((scene) => ({
     id: scene.scene_id,
     imagePrompt: scene.image_prompt,
     videoPrompt: scene.video_prompt,

@@ -139,6 +139,35 @@ describe("GlobalHeader", () => {
     });
   });
 
+  it("shows the project aspect ratio independently from the content mode", () => {
+    vi.spyOn(API, "getUsageStats").mockResolvedValue({
+      total_cost: 0,
+      image_count: 0,
+      video_count: 0,
+      failed_count: 0,
+      total_count: 0,
+    });
+
+    useProjectsStore.setState({
+      currentProjectName: "short-drama",
+      currentProjectData: {
+        title: "短剧项目",
+        content_mode: "drama",
+        aspect_ratio: "9:16",
+        style: "Drama",
+        episodes: [],
+        characters: {},
+        scenes: {},
+        props: {},
+      },
+    });
+
+    renderHeader();
+
+    expect(screen.getByText("剧集动画 9:16")).toBeInTheDocument();
+    expect(screen.queryByText("剧集动画 16:9")).not.toBeInTheDocument();
+  });
+
   it("shows unread notification count and opens the drawer", async () => {
     vi.spyOn(API, "getUsageStats").mockResolvedValue({
       total_cost: 0,

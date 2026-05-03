@@ -14,11 +14,9 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from lib.config.service import ConfigService, ProviderStatus
 from lib.db import get_async_session
-from lib.db.base import Base
 from lib.project_manager import ProjectManager
 from server.auth import CurrentUserInfo, get_current_user
 from server.dependencies import get_config_service
@@ -27,19 +25,6 @@ from server.routers import system_config as system_config_router
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture()
-async def db_session():
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-    try:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        sm = async_sessionmaker(engine, expire_on_commit=False)
-        async with sm() as session:
-            yield session
-    finally:
-        await engine.dispose()
 
 
 class _EmptyScalarResult:
@@ -60,27 +45,12 @@ class _PatchRouteSession:
 
 def _make_app_with_mock(mock_svc: ConfigService) -> FastAPI:
     """App with a fully mocked ConfigService + in-memory DB (no real DB)."""
-    from contextlib import asynccontextmanager
-
-    mem_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-    mem_factory = async_sessionmaker(mem_engine, expire_on_commit=False)
-
-    @asynccontextmanager
-    async def _lifespan(_app: FastAPI):
-        try:
-            async with mem_engine.begin() as conn:
-                await conn.run_sync(Base.metadata.create_all)
-            yield
-        finally:
-            await mem_engine.dispose()
-
-    app = FastAPI(lifespan=_lifespan)
+    app = FastAPI()
     app.dependency_overrides[get_current_user] = lambda: CurrentUserInfo(id="default", sub="testuser", role="admin")
     app.dependency_overrides[get_config_service] = lambda: mock_svc
 
     async def _override_session():
-        async with mem_factory() as session:
-            yield session
+        yield _PatchRouteSession()
 
     app.dependency_overrides[get_async_session] = _override_session
     app.include_router(system_config_router.router, prefix="/api/v1")

@@ -17,6 +17,16 @@ if (typeof globalThis.ResizeObserver === "undefined") {
   } as unknown as typeof ResizeObserver;
 }
 
+// jsdom 暴露 scrollTo 但默认实现只打印 "Not implemented" 到 stderr。
+// 组件测试只关心滚动意图不会抛错，不断言真实像素滚动。
+if (typeof window !== "undefined") {
+  Object.defineProperty(window, "scrollTo", {
+    configurable: true,
+    writable: true,
+    value: vi.fn(),
+  });
+}
+
 if (
   typeof window !== "undefined"
   && (

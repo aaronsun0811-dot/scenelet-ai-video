@@ -780,8 +780,8 @@ export default {
   'no_usage_data': 'No usage data yet',
 
   // GlobalHeader
-  'mode_badge_drama': 'Drama 16:9',
-  'mode_badge_narration': 'Narration 9:16',
+  'mode_badge_drama': 'Drama',
+  'mode_badge_narration': 'Narration',
   'jianying_export_started': 'Jianying draft export started. Please extract the downloaded ZIP into your Jianying drafts directory.',
   'jianying_export_failed': 'Jianying draft export failed: {{message}}',
   'project_zip_download_started_with_diagnostics': 'Project ZIP download started, export contains {{count}} check notice(s)',

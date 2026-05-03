@@ -86,18 +86,21 @@ async def stream_project_events(
     request: Request,
     _user: CurrentUserFlexible,
     _t: Translator,
-) -> EventSourceResponse:
+) -> AsyncIterator[ServerSentEvent]:
     load_project_for_user(get_project_manager(), project_name, user_id=_user.id, translate=_t)
     subscription = await _project_events_subscription(project_name, request, _user.id)
     service, queue, snapshot = subscription
 
-    return EventSourceResponse(
-        _project_events_generator(
-            project_name,
-            request,
-            service,
-            queue,
-            snapshot,
-            _user.id,
-        )
+    stream = _project_events_generator(
+        project_name,
+        request,
+        service,
+        queue,
+        snapshot,
+        _user.id,
     )
+    try:
+        async for event in stream:
+            yield event
+    finally:
+        await stream.aclose()

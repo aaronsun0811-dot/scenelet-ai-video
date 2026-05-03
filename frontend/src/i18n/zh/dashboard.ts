@@ -781,8 +781,8 @@ export default {
   'no_usage_data': '暂无用量数据',
 
   // GlobalHeader
-  'mode_badge_drama': '剧集动画 16:9',
-  'mode_badge_narration': '说书模式 9:16',
+  'mode_badge_drama': '剧集动画',
+  'mode_badge_narration': '说书模式',
   'jianying_export_started': '剪映草稿导出已开始，请将下载的 ZIP 解压到剪映草稿目录中',
   'jianying_export_failed': '剪映草稿导出失败: {{message}}',
   'project_zip_download_started_with_diagnostics': '项目 ZIP 已开始下载，导出包包含 {{count}} 条检查提醒',
