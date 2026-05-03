@@ -11,7 +11,6 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 

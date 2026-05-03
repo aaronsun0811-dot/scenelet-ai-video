@@ -77,7 +77,7 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
   }
 
   if (!isAuthenticated) {
-    return <Redirect to="/login" />;
+    return <Redirect to="~/login" />;
   }
 
   return <>{children}</>;

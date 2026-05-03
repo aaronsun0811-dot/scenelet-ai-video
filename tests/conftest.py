@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 from collections.abc import Callable
 
 from fastapi.testclient import TestClient
-
 
 _ORIGINAL_TEST_CLIENT_EXIT = TestClient.__exit__
 
@@ -56,7 +56,7 @@ from server.agent_runtime.session_store import SessionMetaStore
 
 
 @pytest.fixture(autouse=True)
-def _close_leaked_default_event_loop():
+def _close_leaked_default_event_loop(request: pytest.FixtureRequest):
     """Close a non-running default loop left on the event-loop policy.
 
     Some sync test helpers (notably TestClient/anyio combinations) can leave a
@@ -67,6 +67,9 @@ def _close_leaked_default_event_loop():
     """
 
     yield
+
+    if inspect.iscoroutinefunction(request.function):
+        return
 
     policy = asyncio.get_event_loop_policy()
     local = getattr(policy, "_local", None)

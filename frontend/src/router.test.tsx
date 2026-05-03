@@ -22,6 +22,10 @@ vi.mock("@/components/pages/ProjectsPage", () => ({
   ProjectsPage: () => <div data-testid="projects-page">Projects Page</div>,
 }));
 
+vi.mock("@/pages/LoginPage", () => ({
+  LoginPage: () => <div data-testid="login-page">Login Page</div>,
+}));
+
 function renderAt(path: string) {
   const { hook } = memoryLocation({ path });
   return render(
@@ -51,6 +55,20 @@ describe("AppRoutes", () => {
   it("redirects /app to /app/projects", async () => {
     renderAt("/app");
     expect(await screen.findByTestId("projects-page")).toBeInTheDocument();
+  });
+
+  it("redirects unauthenticated nested project routes to the root login route", async () => {
+    useAuthStore.setState({ isAuthenticated: false, isLoading: false });
+    const location = memoryLocation({ path: "/app/projects/demo/episodes/1", record: true });
+
+    render(
+      <Router hook={location.hook}>
+        <AppRoutes />
+      </Router>,
+    );
+
+    expect(await screen.findByTestId("login-page")).toBeInTheDocument();
+    expect(location.history?.at(-1)).toBe("/login");
   });
 
   it("renders 404 for unknown routes", () => {
