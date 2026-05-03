@@ -21,6 +21,7 @@ MESSAGES: dict[str, str] = {
     "provider_name_runway": "Runway",
     "provider_name_kling": "可灵",
     "provider_name_jimeng": "即梦",
+    "provider_name_qa-fake": "QA 假模型",
     # Provider descriptions
     "provider_desc_gemini-aistudio": "Google AI Studio 提供 Gemini 系列模型，支持图片和视频生成，适合快速原型和个人项目。",
     "provider_desc_gemini-vertex": "Google Cloud Vertex AI 企业级平台，支持 Gemini 和 Imagen 模型，提供更高配额和音频生成能力。",
@@ -41,4 +42,5 @@ MESSAGES: dict[str, str] = {
     "provider_desc_runway": "Runway Gen 系列视频模型，通过统一视频网关 / NewAPI 兼容接口接入。",
     "provider_desc_kling": "可灵 Kling 视频模型，通过统一视频网关 / NewAPI 兼容接口接入。",
     "provider_desc_jimeng": "即梦图片与视频模型，通过 OpenAI Images / NewAPI 兼容网关接入。",
+    "provider_desc_qa-fake": "本地 QA 专用可控假模型，支持文本、图片和视频闭环测试，不访问外部服务。",
 }

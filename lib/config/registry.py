@@ -703,4 +703,34 @@ PROVIDER_REGISTRY: dict[str, ProviderMeta] = {
             ),
         },
     ),
+    "qa-fake": ProviderMeta(
+        display_name="QA Fake",
+        description="本地 QA 专用可控假模型，支持文本、图片和视频闭环测试，不访问外部服务。",
+        required_keys=["api_key"],
+        optional_keys=_WORKER_OPTIONAL_KEYS,
+        secret_keys=["api_key"],
+        models={
+            "qa-fake-text": ModelInfo(
+                display_name="QA Fake Text",
+                media_type="text",
+                capabilities=["text_generation", "structured_output", "vision"],
+                default=True,
+            ),
+            "qa-fake-image": ModelInfo(
+                display_name="QA Fake Image",
+                media_type="image",
+                capabilities=["text_to_image", "image_to_image"],
+                default=True,
+                resolutions=["1K", "2K", "4K"],
+            ),
+            "qa-fake-video": ModelInfo(
+                display_name="QA Fake Video",
+                media_type="video",
+                capabilities=["text_to_video", "image_to_video", "generate_audio", "seed_control"],
+                default=True,
+                supported_durations=[4, 6, 8, 10],
+                resolutions=["480p", "720p", "1080p"],
+            ),
+        },
+    ),
 }

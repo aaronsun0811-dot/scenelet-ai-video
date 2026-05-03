@@ -641,6 +641,15 @@ def _test_openai(config: dict[str, str], _t: Callable[..., str]) -> ConnectionTe
     )
 
 
+def _test_qa_fake(_config: dict[str, str], _t: Callable[..., str]) -> ConnectionTestResponse:
+    """Local QA fake provider is always reachable once a credential is present."""
+    return ConnectionTestResponse(
+        success=True,
+        available_models=sorted(PROVIDER_REGISTRY["qa-fake"].models),
+        message=_t("connection_success"),
+    )
+
+
 def _format_connection_exception(exc: Exception, _t: Callable[..., str]) -> str:
     """Turn SDK exceptions into user-facing diagnostics."""
     status_code = getattr(exc, "status_code", None)
@@ -687,6 +696,7 @@ _TEST_DISPATCH: dict[str, Callable[[dict[str, str], Any], ConnectionTestResponse
     "runway": _test_openai,
     "kling": _test_openai,
     "jimeng": _test_openai,
+    "qa-fake": _test_qa_fake,
 }
 
 

@@ -27,13 +27,14 @@ __all__ = [
     "register_backend",
 ]
 
-from lib.providers import PROVIDER_ARK, PROVIDER_GEMINI, PROVIDER_GROK, PROVIDER_OPENAI
+from lib.providers import PROVIDER_ARK, PROVIDER_GEMINI, PROVIDER_GROK, PROVIDER_OPENAI, PROVIDER_QA_FAKE
 
 _BACKEND_EXPORTS = {
     "GeminiTextBackend": ("lib.text_backends.gemini", "GeminiTextBackend"),
     "ArkTextBackend": ("lib.text_backends.ark", "ArkTextBackend"),
     "GrokTextBackend": ("lib.text_backends.grok", "GrokTextBackend"),
     "OpenAITextBackend": ("lib.text_backends.openai", "OpenAITextBackend"),
+    "QAFakeTextBackend": ("lib.text_backends.qa_fake", "QAFakeTextBackend"),
 }
 
 
@@ -59,3 +60,4 @@ register_backend(PROVIDER_GEMINI, _lazy_backend_factory("lib.text_backends.gemin
 register_backend(PROVIDER_ARK, _lazy_backend_factory("lib.text_backends.ark", "ArkTextBackend"))
 register_backend(PROVIDER_GROK, _lazy_backend_factory("lib.text_backends.grok", "GrokTextBackend"))
 register_backend(PROVIDER_OPENAI, _lazy_backend_factory("lib.text_backends.openai", "OpenAITextBackend"))
+register_backend(PROVIDER_QA_FAKE, _lazy_backend_factory("lib.text_backends.qa_fake", "QAFakeTextBackend"))

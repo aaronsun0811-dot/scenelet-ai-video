@@ -5,7 +5,14 @@ from __future__ import annotations
 from importlib import import_module
 from typing import Any
 
-from lib.providers import PROVIDER_ARK, PROVIDER_GEMINI, PROVIDER_GROK, PROVIDER_NEWAPI, PROVIDER_OPENAI
+from lib.providers import (
+    PROVIDER_ARK,
+    PROVIDER_GEMINI,
+    PROVIDER_GROK,
+    PROVIDER_NEWAPI,
+    PROVIDER_OPENAI,
+    PROVIDER_QA_FAKE,
+)
 from lib.video_backends.base import (
     VideoBackend,
     VideoCapability,
@@ -20,6 +27,7 @@ __all__ = [
     "PROVIDER_GROK",
     "PROVIDER_NEWAPI",
     "PROVIDER_OPENAI",
+    "PROVIDER_QA_FAKE",
     "VideoBackend",
     "VideoCapability",
     "VideoGenerationRequest",
@@ -35,6 +43,7 @@ _BACKEND_EXPORTS = {
     "GrokVideoBackend": ("lib.video_backends.grok", "GrokVideoBackend"),
     "OpenAIVideoBackend": ("lib.video_backends.openai", "OpenAIVideoBackend"),
     "NewAPIVideoBackend": ("lib.video_backends.newapi", "NewAPIVideoBackend"),
+    "QAFakeVideoBackend": ("lib.video_backends.qa_fake", "QAFakeVideoBackend"),
 }
 
 
@@ -61,3 +70,4 @@ register_backend(PROVIDER_ARK, _lazy_backend_factory("lib.video_backends.ark", "
 register_backend(PROVIDER_GROK, _lazy_backend_factory("lib.video_backends.grok", "GrokVideoBackend"))
 register_backend(PROVIDER_OPENAI, _lazy_backend_factory("lib.video_backends.openai", "OpenAIVideoBackend"))
 register_backend(PROVIDER_NEWAPI, _lazy_backend_factory("lib.video_backends.newapi", "NewAPIVideoBackend"))
+register_backend(PROVIDER_QA_FAKE, _lazy_backend_factory("lib.video_backends.qa_fake", "QAFakeVideoBackend"))

@@ -21,6 +21,7 @@ MESSAGES: dict[str, str] = {
     "provider_name_runway": "Runway",
     "provider_name_kling": "Kling",
     "provider_name_jimeng": "Jimeng",
+    "provider_name_qa-fake": "QA Fake",
     # Provider descriptions
     "provider_desc_gemini-aistudio": "Google AI Studio provides Gemini models with image and video generation, ideal for rapid prototyping and personal projects.",
     "provider_desc_gemini-vertex": "Google Cloud Vertex AI enterprise platform supporting Gemini and Imagen models with higher quotas and audio generation.",
@@ -41,4 +42,5 @@ MESSAGES: dict[str, str] = {
     "provider_desc_runway": "Runway Gen video models through a unified video gateway / NewAPI-compatible endpoint.",
     "provider_desc_kling": "Kling video models through a unified video gateway / NewAPI-compatible endpoint.",
     "provider_desc_jimeng": "Jimeng image and video models through OpenAI Images / NewAPI-compatible gateways.",
+    "provider_desc_qa-fake": "Local controllable fake models for QA text, image and video flows without external network calls.",
 }

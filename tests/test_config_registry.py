@@ -22,6 +22,7 @@ def test_all_providers_registered():
         "runway",
         "kling",
         "jimeng",
+        "qa-fake",
     }
 
 

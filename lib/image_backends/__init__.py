@@ -25,13 +25,14 @@ __all__ = [
     "register_backend",
 ]
 
-from lib.providers import PROVIDER_ARK, PROVIDER_GEMINI, PROVIDER_GROK, PROVIDER_OPENAI
+from lib.providers import PROVIDER_ARK, PROVIDER_GEMINI, PROVIDER_GROK, PROVIDER_OPENAI, PROVIDER_QA_FAKE
 
 _BACKEND_EXPORTS = {
     "GeminiImageBackend": ("lib.image_backends.gemini", "GeminiImageBackend"),
     "ArkImageBackend": ("lib.image_backends.ark", "ArkImageBackend"),
     "GrokImageBackend": ("lib.image_backends.grok", "GrokImageBackend"),
     "OpenAIImageBackend": ("lib.image_backends.openai", "OpenAIImageBackend"),
+    "QAFakeImageBackend": ("lib.image_backends.qa_fake", "QAFakeImageBackend"),
 }
 
 
@@ -57,3 +58,4 @@ register_backend(PROVIDER_GEMINI, _lazy_backend_factory("lib.image_backends.gemi
 register_backend(PROVIDER_ARK, _lazy_backend_factory("lib.image_backends.ark", "ArkImageBackend"))
 register_backend(PROVIDER_GROK, _lazy_backend_factory("lib.image_backends.grok", "GrokImageBackend"))
 register_backend(PROVIDER_OPENAI, _lazy_backend_factory("lib.image_backends.openai", "OpenAIImageBackend"))
+register_backend(PROVIDER_QA_FAKE, _lazy_backend_factory("lib.image_backends.qa_fake", "QAFakeImageBackend"))
