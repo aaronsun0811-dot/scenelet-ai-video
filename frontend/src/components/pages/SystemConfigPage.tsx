@@ -1,5 +1,5 @@
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useSearch } from "wouter";
 import { AlertTriangle, ChevronLeft, FolderOpen, LogOut, Package } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -12,6 +12,7 @@ import { AgentConfigTab } from "./AgentConfigTab";
 import { ApiKeysTab } from "./ApiKeysTab";
 import { CreateProjectModal } from "./CreateProjectModal";
 import { AboutSection } from "./settings/AboutSection";
+import { API } from "@/api";
 import { MediaModelSection } from "./settings/MediaModelSection";
 import { ProviderSection } from "./ProviderSection";
 import { UsageStatsSection } from "./settings/UsageStatsSection";
@@ -36,8 +37,10 @@ export function SystemConfigPage() {
   const [location, navigate] = useLocation();
   const search = useSearch();
   const logout = useAuthStore((s) => s.logout);
+  const authRole = useAuthStore((s) => s.role);
   const showCreateModal = useProjectsStore((s) => s.showCreateModal);
   const setShowCreateModal = useProjectsStore((s) => s.setShowCreateModal);
+  const [verifiedRole, setVerifiedRole] = useState<string | null | undefined>(authRole ?? undefined);
 
   const activeSection = useMemo((): SettingsSection => {
     const section = new URLSearchParams(search).get("section");
@@ -65,10 +68,31 @@ export function SystemConfigPage() {
 
   const configIssues = useConfigStatusStore((s) => s.issues);
   const fetchConfigStatus = useConfigStatusStore((s) => s.fetch);
+  const isAdmin = (authRole ?? verifiedRole) === "admin";
+  const isCheckingRole = authRole === null && verifiedRole === undefined;
+  const isAdminOnlySection = activeSection === "users" || activeSection === "maintenance";
 
   useEffect(() => {
     void fetchConfigStatus();
   }, [fetchConfigStatus]);
+
+  useEffect(() => {
+    if (authRole !== null) {
+      return;
+    }
+
+    let disposed = false;
+    API.verifyAuth()
+      .then((auth) => {
+        if (!disposed) setVerifiedRole(auth.role);
+      })
+      .catch(() => {
+        if (!disposed) setVerifiedRole(null);
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [authRole]);
 
   // -------------------------------------------------------------------------
   // Main render
@@ -164,24 +188,44 @@ export function SystemConfigPage() {
                 </div>
               )}
 
-              {activeSection === "agent" && <AgentConfigTab visible />}
-              {activeSection === "media" && <MediaModelSection />}
-              {activeSection === "maps" && <TravelMapSettingsSection />}
-              {activeSection === "usage" && <UsageStatsSection />}
-              {activeSection === "billing" && <StripeSandboxSection />}
-              {activeSection === "users" && <UserAdminSection />}
-              {activeSection === "maintenance" && <ProjectNamespaceMigrationSection />}
-              {activeSection === "api-keys" && (
-                <div className="p-6">
-                  <ApiKeysTab />
-                </div>
+              {isAdminOnlySection && !isAdmin ? (
+                <AdminOnlyNotice loading={isCheckingRole} />
+              ) : (
+                <>
+                  {activeSection === "agent" && <AgentConfigTab visible />}
+                  {activeSection === "media" && <MediaModelSection />}
+                  {activeSection === "maps" && <TravelMapSettingsSection />}
+                  {activeSection === "usage" && <UsageStatsSection />}
+                  {activeSection === "billing" && <StripeSandboxSection />}
+                  {activeSection === "users" && <UserAdminSection />}
+                  {activeSection === "maintenance" && <ProjectNamespaceMigrationSection />}
+                  {activeSection === "api-keys" && (
+                    <div className="p-6">
+                      <ApiKeysTab />
+                    </div>
+                  )}
+                  {activeSection === "about" && <AboutSection />}
+                </>
               )}
-              {activeSection === "about" && <AboutSection />}
             </div>
           )}
         </main>
       </div>
       {showCreateModal && <CreateProjectModal />}
+    </div>
+  );
+}
+
+function AdminOnlyNotice({ loading }: { loading: boolean }) {
+  const { t } = useTranslation("dashboard");
+  return (
+    <div className="rounded-xl border border-amber-300/20 bg-amber-300/10 p-5 text-amber-50">
+      <h2 className="text-sm font-semibold">
+        {loading ? t("admin_access_checking") : t("admin_access_required_title")}
+      </h2>
+      <p className="mt-2 text-sm leading-6 text-amber-100/75">
+        {loading ? t("admin_access_checking_desc") : t("admin_access_required_desc")}
+      </p>
     </div>
   );
 }

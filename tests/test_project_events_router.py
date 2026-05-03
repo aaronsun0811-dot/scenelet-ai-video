@@ -58,11 +58,19 @@ async def test_stream_project_events_emits_snapshot_and_changes(monkeypatch):
     request = _FakeRequest(app)
 
     monkeypatch.setattr(project_events_router, "get_project_manager", lambda: _FakeProjectManager())
-    stream = project_events_router.stream_project_events(
+    subscription = await project_events_router._project_events_subscription(
         "demo",
         request,
-        _user=CurrentUserInfo(id="default", sub="testuser", role="admin"),
-        _t=lambda key, **kwargs: key,
+        "default",
+    )
+    service_for_stream, queue, snapshot = subscription
+    stream = project_events_router._project_events_generator(
+        "demo",
+        request,
+        service_for_stream,
+        queue,
+        snapshot,
+        "default",
     )
 
     snapshot_event = await anext(stream)
@@ -75,3 +83,23 @@ async def test_stream_project_events_emits_snapshot_and_changes(monkeypatch):
     assert changes_event.event == "changes"
     assert changes_event.data["batch_id"] == "batch-1"
     assert service.unsubscribed is True
+
+
+@pytest.mark.asyncio
+async def test_stream_project_events_rejects_inaccessible_project_before_sse(monkeypatch):
+    service = _FakeService()
+    app = SimpleNamespace(state=SimpleNamespace(project_event_service=service))
+    request = _FakeRequest(app)
+
+    monkeypatch.setattr(project_events_router, "get_project_manager", lambda: _FakeProjectManager())
+
+    with pytest.raises(project_events_router.HTTPException) as exc_info:
+        await project_events_router.stream_project_events(
+            "demo",
+            request,
+            _user=CurrentUserInfo(id="other-user", sub="alice", role="user"),
+            _t=lambda key, **kwargs: key,
+        )
+
+    assert exc_info.value.status_code == 404
+    assert service.queue is None

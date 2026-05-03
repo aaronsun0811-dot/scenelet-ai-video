@@ -22,6 +22,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useConfigStatusStore } from "@/stores/config-status-store";
+import { useAuthStore } from "@/stores/auth-store";
 import { getNextLanguage, normalizeLanguage, SUPPORTED_LANGUAGES } from "@/i18n/languages";
 import { rememberAssetLibraryReturnTo } from "@/utils/asset-library-return";
 
@@ -44,6 +45,7 @@ const SETTINGS_SHORTCUTS: {
   labelKey: string;
   Icon: LucideIcon;
   issueSensitive?: boolean;
+  adminOnly?: boolean;
   ariaLabel: string;
 }[] = [
   { section: "agent", labelKey: "dashboard:agents", Icon: Bot, issueSensitive: true, ariaLabel: "侧边栏智能体设置" },
@@ -52,8 +54,8 @@ const SETTINGS_SHORTCUTS: {
   { section: "maps", labelKey: "dashboard:maps_settings", Icon: MapPinned, ariaLabel: "侧边栏地图与旅游设置" },
   { section: "usage", labelKey: "dashboard:usage", Icon: BarChart3, ariaLabel: "侧边栏用量统计" },
   { section: "billing", labelKey: "dashboard:billing_settings", Icon: CreditCard, ariaLabel: "侧边栏支付联调" },
-  { section: "users", labelKey: "dashboard:users", Icon: Users, ariaLabel: "侧边栏用户设置" },
-  { section: "maintenance", labelKey: "dashboard:maintenance", Icon: Wrench, ariaLabel: "侧边栏维护设置" },
+  { section: "users", labelKey: "dashboard:users", Icon: Users, adminOnly: true, ariaLabel: "侧边栏用户设置" },
+  { section: "maintenance", labelKey: "dashboard:maintenance", Icon: Wrench, adminOnly: true, ariaLabel: "侧边栏维护设置" },
   { section: "api-keys", labelKey: "dashboard:api_keys", Icon: KeyRound, ariaLabel: "侧边栏 API 令牌设置" },
   { section: "about", labelKey: "dashboard:about", Icon: Info, ariaLabel: "侧边栏关于设置" },
 ];
@@ -89,6 +91,8 @@ export function AppSidebar({
   const [location, navigate] = useLocation();
   const configIssues = useConfigStatusStore((s) => s.issues);
   const fetchConfigStatus = useConfigStatusStore((s) => s.fetch);
+  const role = useAuthStore((s) => s.role);
+  const canSeeAdminShortcuts = role !== "user";
   const currentLanguage = normalizeLanguage(i18n.resolvedLanguage || i18n.language);
   const currentLanguageMeta = SUPPORTED_LANGUAGES.find((item) => item.code === currentLanguage) ?? SUPPORTED_LANGUAGES[0];
 
@@ -185,7 +189,7 @@ export function AppSidebar({
       <div className="px-4 pb-2 text-xs font-medium uppercase tracking-normal text-gray-600">
         {t("common:settings")}
       </div>
-      {SETTINGS_SHORTCUTS.map(({ section, labelKey, Icon, issueSensitive, ariaLabel }) => {
+      {SETTINGS_SHORTCUTS.filter((item) => !item.adminOnly || canSeeAdminShortcuts).map(({ section, labelKey, Icon, issueSensitive, ariaLabel }) => {
         const active = activeSettingsSection === section;
         const hasIssue = Boolean(issueSensitive && configIssues.length > 0);
         return (

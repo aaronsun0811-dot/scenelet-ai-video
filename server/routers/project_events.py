@@ -48,20 +48,14 @@ async def _project_events_subscription(
     return service, queue, snapshot
 
 
-@router.get(
-    "/projects/{project_name}/events/stream",
-    response_class=EventSourceResponse,
-)
-async def stream_project_events(
+async def _project_events_generator(
     project_name: str,
     request: Request,
-    _user: CurrentUserFlexible,
-    _t: Translator,
+    service: ProjectEventService,
+    queue: asyncio.Queue,
+    snapshot: dict[str, Any],
+    user_id: str,
 ) -> AsyncIterator[ServerSentEvent]:
-    load_project_for_user(get_project_manager(), project_name, user_id=_user.id, translate=_t)
-    subscription = await _project_events_subscription(project_name, request, _user.id)
-    service, queue, snapshot = subscription
-
     try:
         yield ServerSentEvent(event="snapshot", data=snapshot)
 
@@ -78,6 +72,32 @@ async def stream_project_events(
             yield ServerSentEvent(event=event_name, data=payload)
     finally:
         try:
-            await service.unsubscribe(project_name, queue, user_id=_user.id)
+            await service.unsubscribe(project_name, queue, user_id=user_id)
         except TypeError:
             await service.unsubscribe(project_name, queue)
+
+
+@router.get(
+    "/projects/{project_name}/events/stream",
+    response_class=EventSourceResponse,
+)
+async def stream_project_events(
+    project_name: str,
+    request: Request,
+    _user: CurrentUserFlexible,
+    _t: Translator,
+) -> EventSourceResponse:
+    load_project_for_user(get_project_manager(), project_name, user_id=_user.id, translate=_t)
+    subscription = await _project_events_subscription(project_name, request, _user.id)
+    service, queue, snapshot = subscription
+
+    return EventSourceResponse(
+        _project_events_generator(
+            project_name,
+            request,
+            service,
+            queue,
+            snapshot,
+            _user.id,
+        )
+    )

@@ -23,4 +23,16 @@ describe("LanguageSwitch", () => {
       expect(screen.getByRole("combobox", { name: "言語" })).toHaveValue("ja");
     });
   });
+
+  it("translates visible Japanese project and copilot empty states", async () => {
+    await i18n.changeLanguage("ja");
+
+    expect(i18n.t("dashboard:no_characters_hint_clickable")).toBe("人物はまだありません。クリックして追加");
+    expect(i18n.t("dashboard:no_scenes_hint_clickable")).toBe("シーンはまだありません。クリックして追加");
+    expect(i18n.t("dashboard:no_props_hint_clickable")).toBe("小道具はまだありません。クリックして追加");
+    expect(i18n.t("dashboard:loading_project_data")).toBe("プロジェクトデータを読み込み中...");
+    expect(i18n.t("dashboard:new_session")).toBe("新規セッション");
+    expect(i18n.t("dashboard:start_chat_hint")).toBe("下の入力欄からメッセージを送信できます");
+    expect(i18n.t("dashboard:quick_skill_hint")).toBe("/ を入力すると Skill をすばやく呼び出せます");
+  });
 });

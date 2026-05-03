@@ -119,15 +119,18 @@ describe("AppRoutes", () => {
     expect(useProjectsStore.getState().currentProjectData).toBeNull();
   });
 
-  it("keeps project name when loading project details fails", async () => {
+  it("shows an unavailable-project state when loading project details fails", async () => {
     vi.spyOn(API, "getProject").mockRejectedValue(new Error("network"));
 
     renderAt("/app/projects/fail-demo");
 
     expect(await screen.findByTestId("studio-layout")).toBeInTheDocument();
+    expect(await screen.findByText("项目不可用")).toBeInTheDocument();
+    expect(screen.getByText("项目「fail-demo」不存在，或当前账号没有访问权限。")).toBeInTheDocument();
+    expect(screen.queryByTestId("studio-canvas-router")).not.toBeInTheDocument();
     await waitFor(() => {
       const projectState = useProjectsStore.getState();
-      expect(projectState.currentProjectName).toBe("fail-demo");
+      expect(projectState.currentProjectName).toBeNull();
       expect(projectState.currentProjectData).toBeNull();
       expect(projectState.projectDetailLoading).toBe(false);
     });

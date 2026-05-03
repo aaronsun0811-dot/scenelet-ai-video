@@ -104,6 +104,16 @@ function renderPage(path = "/app/settings") {
   };
 }
 
+function authenticateForTest(role: "admin" | "user") {
+  useAuthStore.setState({
+    token: `${role}-token`,
+    username: `${role}_user`,
+    role,
+    isAuthenticated: true,
+    isLoading: false,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -296,6 +306,26 @@ describe("SystemConfigPage", () => {
     expect(screen.getByRole("button", { name: /关于/ })).toBeInTheDocument();
   });
 
+  it("hides admin-only settings shortcuts for normal users", () => {
+    authenticateForTest("user");
+    renderPage();
+    expect(screen.queryByRole("button", { name: /用户/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /维护/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /支付联调/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /API 令牌/ })).toBeInTheDocument();
+  });
+
+  it("blocks direct normal-user access to the user management section", async () => {
+    const listUsersSpy = vi.spyOn(API, "listUsers");
+    authenticateForTest("user");
+
+    renderPage("/app/settings?section=users");
+
+    expect(await screen.findByText("需要管理员权限")).toBeInTheDocument();
+    expect(screen.queryByText("用户管理")).not.toBeInTheDocument();
+    expect(listUsersSpy).not.toHaveBeenCalled();
+  });
+
   it("renders the user management section", async () => {
     renderPage("/app/settings?section=users");
     expect(await screen.findByText("用户管理")).toBeInTheDocument();
@@ -401,6 +431,17 @@ describe("SystemConfigPage", () => {
     renderPage("/app/settings?section=maintenance");
     expect(await screen.findByText("项目命名空间迁移")).toBeInTheDocument();
     expect(screen.getByText("暂无需要迁移的旧用户项目。")).toBeInTheDocument();
+  });
+
+  it("blocks direct normal-user access to the maintenance section", async () => {
+    const migrationSpy = vi.spyOn(API, "getProjectNamespaceMigrationPreview");
+    authenticateForTest("user");
+
+    renderPage("/app/settings?section=maintenance");
+
+    expect(await screen.findByText("需要管理员权限")).toBeInTheDocument();
+    expect(screen.queryByText("项目命名空间迁移")).not.toBeInTheDocument();
+    expect(migrationSpy).not.toHaveBeenCalled();
   });
 
   it("saves and clears the optional Google Maps key", async () => {
@@ -806,6 +847,15 @@ describe("SystemConfigPage", () => {
       });
     });
     expect(useAppStore.getState().toast?.text).toContain("积分已手动入账");
+  });
+
+  it("hides manual credit grants in the billing lab for normal users", async () => {
+    authenticateForTest("user");
+    renderPage("/app/settings?section=billing");
+
+    expect(await screen.findByText("Stripe 沙盒联调")).toBeInTheDocument();
+    expect(screen.queryByText("手动积分入账")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "手动入账" })).not.toBeInTheDocument();
   });
 
   it("does not call version APIs from the editable about section", async () => {
