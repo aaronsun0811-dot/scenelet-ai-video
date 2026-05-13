@@ -696,6 +696,45 @@ class TaskRepository(BaseRepository):
         await self.session.commit()
         return len(requeued_tasks)
 
+    async def requeue_single(self, task_id: str) -> bool:
+        """Return a running task to the queue (e.g. provider pool was full at dispatch).
+
+        Mirrors ``requeue_running`` semantics for a single id: resets timing/result
+        fields and writes a ``requeued`` event. Returns True if a row was updated.
+        """
+        now = utc_now()
+        result = await self.session.execute(
+            update(Task)
+            .where(Task.task_id == task_id, Task.status == "running")
+            .values(
+                status="queued",
+                started_at=None,
+                finished_at=None,
+                updated_at=now,
+                result_json=None,
+                error_message=None,
+            )
+        )
+        if (result.rowcount or 0) == 0:
+            await self.session.rollback()
+            return False
+        await self.session.flush()
+
+        row = (await self.session.execute(select(Task).where(Task.task_id == task_id))).scalar_one_or_none()
+        if row is not None:
+            self.session.add(
+                TaskEvent(
+                    task_id=row.task_id,
+                    project_name=row.project_name,
+                    event_type="requeued",
+                    status="queued",
+                    data_json=_json_dumps(_task_to_dict(row)),
+                    created_at=utc_now(),
+                )
+            )
+        await self.session.commit()
+        return True
+
     async def get(self, task_id: str, *, user_id: str | None = None) -> dict[str, Any] | None:
         stmt = select(Task).where(Task.task_id == task_id)
         if user_id:

@@ -93,6 +93,15 @@ class GenerationQueue:
             logger.warning("回收 %d 个 running 任务", recovered)
         return recovered
 
+    async def requeue_single_task(self, task_id: str) -> bool:
+        """Send one running task back to queued (used when provider pool was full at dispatch)."""
+        async with self._session_factory() as session:
+            repo = TaskRepository(session)
+            requeued = await repo.requeue_single(task_id)
+        if requeued:
+            logger.debug("回队任务 task_id=%s", task_id)
+        return requeued
+
     async def mark_task_succeeded(self, task_id: str, result: dict[str, Any] | None) -> dict[str, Any] | None:
 
         async with self._session_factory() as session:

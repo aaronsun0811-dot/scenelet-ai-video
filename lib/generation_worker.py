@@ -16,8 +16,6 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-from datetime import UTC
-
 from lib.db.base import DEFAULT_USER_ID
 from lib.generation_queue import (
     TASK_POLL_INTERVAL_SEC,
@@ -419,6 +417,7 @@ class GenerationWorker:
                     break
 
                 provider_id = await _extract_provider(task)
+                task["_resolved_provider"] = provider_id  # cached so _process_task skips re-resolve
                 pool = self._get_or_create_pool(provider_id)
 
                 if media_type == "image":
@@ -472,25 +471,7 @@ class GenerationWorker:
     async def _requeue_single_task(self, task_id: str) -> None:
         """Put a claimed (running) task back to queued status."""
         try:
-            from datetime import datetime
-
-            from sqlalchemy import update
-
-            from lib.db import safe_session_factory
-            from lib.db.models.task import Task
-
-            async with safe_session_factory() as session:
-                await session.execute(
-                    update(Task)
-                    .where(Task.task_id == task_id, Task.status == "running")
-                    .values(
-                        status="queued",
-                        started_at=None,
-                        updated_at=datetime.now(UTC),
-                    )
-                )
-                await session.commit()
-            logger.debug("回队任务 %s (供应商池已满)", task_id)
+            await self.queue.requeue_single_task(task_id)
         except Exception:
             logger.warning("回队任务 %s 失败", task_id, exc_info=True)
 
@@ -520,7 +501,7 @@ class GenerationWorker:
     async def _process_task(self, task: dict[str, Any]) -> None:
         task_id = task["task_id"]
         task_type = task.get("task_type", "unknown")
-        provider_id = await _extract_provider(task)
+        provider_id = task.get("_resolved_provider") or await _extract_provider(task)
         logger.info("开始处理任务 %s (type=%s, provider=%s)", task_id, task_type, provider_id)
         try:
             from server.services.generation_tasks import execute_generation_task
