@@ -13,19 +13,10 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/create-github-app-token@v3
-        id: app-token
-        with:
-          client-id: ${{ secrets.RELEASE_PLEASE_APP_CLIENT_ID }}
-          private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
-          permission-contents: write
-          permission-issues: write
-          permission-pull-requests: write
-
       - uses: googleapis/release-please-action@v5
         id: release
         with:
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ github.token }}
           config-file: .release-please-config.json
           manifest-file: .release-please-manifest.json
 
@@ -38,7 +29,7 @@ jobs:
         with:
           ref: ${{ fromJson(steps.release.outputs.pr).headBranchName }}
           fetch-depth: 0
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ github.token }}
 
       - name: Set up uv
         if: ${{ steps.release.outputs.pr }}
