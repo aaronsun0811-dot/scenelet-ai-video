@@ -16,6 +16,7 @@ import {
   Package,
   Plug,
   Plus,
+  ShieldCheck,
   Upload,
   Users,
   Wrench,
@@ -26,7 +27,7 @@ import { useAuthStore } from "@/stores/auth-store";
 import { getNextLanguage, normalizeLanguage, SUPPORTED_LANGUAGES } from "@/i18n/languages";
 import { rememberAssetLibraryReturnTo } from "@/utils/asset-library-return";
 
-export type AppSidebarMain = "projects" | "assets" | null;
+export type AppSidebarMain = "projects" | "assets" | "admin" | null;
 export type AppSidebarSettingsSection =
   | "agent"
   | "providers"
@@ -184,6 +185,18 @@ export function AppSidebar({
         <Plus className="h-4 w-4" />
         <span className="flex-1 text-left">{t("dashboard:create_project")}</span>
       </button>
+      {canSeeAdminShortcuts && (
+        <button
+          type="button"
+          onClick={() => go("/app/admin")}
+          aria-current={activeMain === "admin" || location.startsWith("/app/admin") ? "page" : undefined}
+          aria-label="侧边栏管理后台"
+          className={navItemClass(activeMain === "admin" || location.startsWith("/app/admin"))}
+        >
+          <ShieldCheck className="h-4 w-4" />
+          <span className="flex-1 text-left">{t("dashboard:admin_console")}</span>
+        </button>
+      )}
 
       <div className="my-3 mx-4 border-t border-gray-800" />
       <div className="px-4 pb-2 text-xs font-medium uppercase tracking-normal text-gray-600">

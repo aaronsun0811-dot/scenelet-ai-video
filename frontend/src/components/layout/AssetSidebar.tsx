@@ -13,11 +13,13 @@ import {
   User,
   Landmark,
   Package,
+  Paperclip,
   LayoutDashboard,
   Upload,
   X,
 } from "lucide-react";
 import { API, ConflictError } from "@/api";
+import { AuthenticatedImage } from "@/components/ui/AuthenticatedMedia";
 import { useProjectsStore } from "@/stores/projects-store";
 import { useAppStore } from "@/stores/app-store";
 // ---------------------------------------------------------------------------
@@ -115,7 +117,7 @@ function AssetThumbnail({
   }
 
   return (
-    <img
+    <AuthenticatedImage
       src={API.getFileUrl(projectName, sheetPath, sheetFp)}
       alt={name}
       className={`h-7 w-7 shrink-0 ${roundedClass} object-cover`}
@@ -327,19 +329,20 @@ export function AssetSidebar({ className }: AssetSidebarProps) {
                       <span className="truncate font-medium">{item.name}</span>
                     </button>
                     {item.rawFilename && (
-                      <a
-                        href={API.getFileUrl(
-                          projectName,
-                          `source/raw/${encodeURIComponent(item.rawFilename)}`,
-                        )}
-                        target="_blank"
-                        rel="noreferrer"
+                      <button
+                        type="button"
                         title={t("common:download_original")}
-                        onClick={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          voidCall(API.downloadFileUrl(
+                            API.getFileUrl(projectName, `source/raw/${encodeURIComponent(item.rawFilename!)}`),
+                            item.rawFilename ?? item.name,
+                          ));
+                        }}
                         className="shrink-0 rounded p-0.5 text-xs text-gray-500 opacity-60 transition-opacity hover:opacity-100 focus-ring"
                       >
-                        📎
-                      </a>
+                        <Paperclip className="h-3.5 w-3.5" />
+                      </button>
                     )}
                     <button
                       type="button"

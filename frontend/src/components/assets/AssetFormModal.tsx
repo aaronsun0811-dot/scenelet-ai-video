@@ -4,6 +4,7 @@ import { AlertTriangle, ImagePlus, Landmark, Package, User, X } from "lucide-rea
 import type { Asset, AssetType } from "@/types/asset";
 import { useFocusTrap } from "@/hooks/useFocusTrap";
 import { useEscapeClose } from "@/hooks/useEscapeClose";
+import { AuthenticatedImage } from "@/components/ui/AuthenticatedMedia";
 import { sanitizeImageSrc } from "@/utils/safe-url";
 
 type Mode = "create" | "edit" | "import";
@@ -137,7 +138,7 @@ export function AssetFormModal({
             >
               {displayedPreview ? (
                 <>
-                  <img
+                  <AuthenticatedImage
                     src={displayedPreview}
                     alt=""
                     className="absolute inset-0 h-full w-full object-cover"

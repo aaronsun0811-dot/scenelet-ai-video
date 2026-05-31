@@ -21,7 +21,7 @@ class _FakeService:
         self.unsubscribed = False
         self.queue = None
 
-    async def subscribe(self, project_name: str):
+    async def subscribe(self, project_name: str, user_id: str | None = None):
         queue = asyncio.Queue()
         await queue.put(
             (
@@ -43,7 +43,7 @@ class _FakeService:
             "generated_at": "2026-03-01T00:00:00Z",
         }
 
-    async def unsubscribe(self, project_name: str, queue):
+    async def unsubscribe(self, project_name: str, queue, user_id: str | None = None):
         self.unsubscribed = True
 
 

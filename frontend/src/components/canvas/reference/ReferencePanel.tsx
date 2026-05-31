@@ -21,6 +21,7 @@ import { GripVertical, Plus, X, ZoomIn } from "lucide-react";
 import { assetColor } from "./asset-colors";
 import { MentionPicker, type MentionCandidate } from "./MentionPicker";
 import { ImageLightbox } from "@/components/ui/ImageLightbox";
+import { AuthenticatedImage } from "@/components/ui/AuthenticatedMedia";
 import { API } from "@/api";
 import { useProjectsStore } from "@/stores/projects-store";
 import { SHEET_FIELD, type AssetKind, type ReferenceResource } from "@/types/reference-video";
@@ -101,7 +102,7 @@ const Pill = memo(function Pill({
           aria-label={t("reference_panel_zoom_aria", { name: refItem.name })}
           className="relative h-[72px] w-[72px] shrink-0 overflow-hidden rounded bg-gray-900 ring-1 ring-gray-800 transition hover:ring-indigo-400 focus-visible:ring-2 focus-visible:ring-indigo-400 focus-visible:outline-none"
         >
-          <img src={thumbUrl} alt="" loading="lazy" className="h-full w-full object-cover" />
+          <AuthenticatedImage src={thumbUrl} alt="" loading="lazy" className="h-full w-full object-cover" />
           <span
             aria-hidden="true"
             className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition group-hover/pill:opacity-100"

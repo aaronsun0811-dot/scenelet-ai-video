@@ -5,6 +5,7 @@ import { API } from "@/api";
 import { AddToLibraryButton } from "@/components/assets/AddToLibraryButton";
 import { VersionTimeMachine } from "@/components/canvas/timeline/VersionTimeMachine";
 import { AspectFrame } from "@/components/ui/AspectFrame";
+import { AuthenticatedImage } from "@/components/ui/AuthenticatedMedia";
 import { GenerateButton } from "@/components/ui/GenerateButton";
 import { ImageFlipReveal } from "@/components/ui/ImageFlipReveal";
 import { PreviewableImageFrame } from "@/components/ui/PreviewableImageFrame";
@@ -268,7 +269,7 @@ export function CharacterCard({
               buttonClassName="right-2.5 top-2.5"
             >
               <div className="relative overflow-hidden rounded-lg border border-gray-700 bg-gray-800">
-                <img
+                <AuthenticatedImage
                   src={displayedReferenceUrl}
                   alt={`${name} ${t("reference_image")}`}
                   className="h-28 w-full object-cover"

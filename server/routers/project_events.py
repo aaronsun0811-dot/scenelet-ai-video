@@ -39,10 +39,7 @@ async def _project_events_subscription(
 ) -> tuple[ProjectEventService, asyncio.Queue, dict[str, Any]]:
     service = get_project_event_service(request)
     try:
-        try:
-            queue, snapshot = await service.subscribe(project_name, user_id=user_id)
-        except TypeError:
-            queue, snapshot = await service.subscribe(project_name)
+        queue, snapshot = await service.subscribe(project_name, user_id=user_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     return service, queue, snapshot
@@ -71,10 +68,7 @@ async def _project_events_generator(
                 continue
             yield ServerSentEvent(event=event_name, data=payload)
     finally:
-        try:
-            await service.unsubscribe(project_name, queue, user_id=user_id)
-        except TypeError:
-            await service.unsubscribe(project_name, queue)
+        await service.unsubscribe(project_name, queue, user_id=user_id)
 
 
 @router.get(

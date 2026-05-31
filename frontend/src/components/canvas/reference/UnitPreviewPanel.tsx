@@ -1,5 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { API } from "@/api";
+import { AuthenticatedVideo } from "@/components/ui/AuthenticatedMedia";
 import type { ReferenceVideoUnit } from "@/types";
 
 export interface UnitPreviewPanelProps {
@@ -25,8 +26,7 @@ export function UnitPreviewPanel({ unit, projectName }: UnitPreviewPanelProps) {
     <div className="flex h-full flex-col gap-3 p-3">
       <div className="aspect-video w-full overflow-hidden rounded-lg border border-gray-800 bg-black">
         {videoUrl ? (
-          // eslint-disable-next-line jsx-a11y/media-has-caption -- AI-generated video clips have no caption track
-          <video
+          <AuthenticatedVideo
             src={videoUrl}
             aria-label={t("reference_preview_video_aria", { id: unit.unit_id })}
             controls

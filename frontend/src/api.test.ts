@@ -245,6 +245,7 @@ describe("API", () => {
       await API.grantCredits({ amount: 1000, description: "manual" });
       await API.cancelCreditOrder("co_demo");
       await API.listFiles("demo");
+      await API.requestFileAccessToken("demo", "videos/scene.mp4");
       await API.listDrafts("demo");
       await API.deleteDraft("demo", 1, 2);
       await API.generateOverview("demo");
@@ -396,6 +397,10 @@ describe("API", () => {
       expect(requestSpy).toHaveBeenCalledWith("/billing/credits/orders/co_demo/cancel", {
         method: "POST",
       });
+      expect(requestSpy).toHaveBeenCalledWith("/files/demo/access-token", {
+        method: "POST",
+        body: JSON.stringify({ path: "videos/scene.mp4" }),
+      });
       expect(requestSpy).toHaveBeenCalledWith("/projects/demo/generate/video/seg-1", {
         method: "POST",
         body: JSON.stringify({
@@ -521,12 +526,15 @@ describe("API", () => {
       expect(requestSpy).toHaveBeenCalledWith("/tasks/task%20id");
     });
 
-    it("builds static file and stream urls", () => {
+    it("builds static file urls without leaking JWT into query params", () => {
       expect(API.getFileUrl("my project", "source/a.txt")).toBe(
         "/api/v1/files/my%20project/source/a.txt",
       );
       expect(API.getFileUrl("my project", "source/a.txt", 3)).toBe(
         "/api/v1/files/my%20project/source/a.txt?v=3",
+      );
+      expect(API.getSignedFileUrl("my project", "videos/a.mp4", "short-token", 3)).toBe(
+        "/api/v1/files/my%20project/videos/a.mp4?v=3&file_token=short-token",
       );
       expect(API.getAssistantStreamUrl("demo", "session-1")).toBe(
         "/api/v1/projects/demo/assistant/sessions/session-1/stream",
@@ -534,18 +542,21 @@ describe("API", () => {
 
       window.localStorage.setItem("scenelet_auth_token", "jwt-demo");
       expect(API.getFileUrl("my project", "source/a.txt")).toBe(
-        "/api/v1/files/my%20project/source/a.txt?token=jwt-demo",
+        "/api/v1/files/my%20project/source/a.txt",
       );
       expect(API.getFileUrl("my project", "source/a.txt", 3)).toBe(
-        "/api/v1/files/my%20project/source/a.txt?v=3&token=jwt-demo",
+        "/api/v1/files/my%20project/source/a.txt?v=3",
+      );
+      expect(API.getAssistantStreamUrl("demo", "session-1")).toBe(
+        "/api/v1/projects/demo/assistant/sessions/session-1/stream?token=jwt-demo",
       );
     });
 
-    it("migrates legacy auth tokens when building authenticated file urls", () => {
+    it("migrates legacy auth tokens when building authenticated stream urls", () => {
       window.localStorage.setItem("arcreel_auth_token", "jwt-legacy");
 
-      expect(API.getFileUrl("my project", "source/a.txt")).toBe(
-        "/api/v1/files/my%20project/source/a.txt?token=jwt-legacy",
+      expect(API.getAssistantStreamUrl("demo", "session-1")).toBe(
+        "/api/v1/projects/demo/assistant/sessions/session-1/stream?token=jwt-legacy",
       );
       expect(window.localStorage.getItem("scenelet_auth_token")).toBe("jwt-legacy");
       expect(window.localStorage.getItem("arcreel_auth_token")).toBeNull();

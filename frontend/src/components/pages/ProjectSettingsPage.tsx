@@ -9,6 +9,7 @@ import { useAuthStore } from "@/stores/auth-store";
 import { useProjectsStore } from "@/stores/projects-store";
 import { AppSidebar } from "@/components/layout/AppSidebar";
 import { PROVIDER_NAMES } from "@/components/ui/ProviderIcon";
+import { AuthenticatedImage } from "@/components/ui/AuthenticatedMedia";
 import { LanguageSwitch } from "@/components/ui/LanguageSwitch";
 import { CreateProjectModal } from "./CreateProjectModal";
 import { getProviderModels, getCustomProviderModels } from "@/utils/provider-models";
@@ -1047,7 +1048,7 @@ export function ProjectSettingsPage() {
                           <div key={node.id} className="rounded-lg border border-gray-800 bg-gray-950/50 px-3 py-2">
                             {thumbnailUrl && (
                               <div className="mb-2 aspect-video overflow-hidden rounded-md border border-cyan-300/15 bg-gray-900">
-                                <img
+                                <AuthenticatedImage
                                   src={thumbnailUrl}
                                   alt={`${thumbnailAlt} ${node.label}`}
                                   className="h-full w-full object-cover"
@@ -1123,7 +1124,7 @@ export function ProjectSettingsPage() {
                 <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
                   {travelVideoSettings.reference_images.map((path) => (
                     <div key={path} className="group relative overflow-hidden rounded-lg border border-gray-800 bg-gray-900">
-                      <img
+                      <AuthenticatedImage
                         src={API.getFileUrl(projectName, path)}
                         alt={t("travel_video_reference_image_alt")}
                         className="aspect-video w-full object-cover"

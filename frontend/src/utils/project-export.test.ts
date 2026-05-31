@@ -200,14 +200,14 @@ describe("project export helpers", () => {
     delete reportWithoutTime.generated_at;
 
     expect(getDeliveryReportDownloadBaseName(makeReport())).toBe(
-      "arcreel-delivery-report-20260502-000000",
+      "scenelet-delivery-report-20260502-000000",
     );
     expect(getDeliveryReportDownloadBaseName(makeReport(), "我的 项目/01")).toBe(
-      "arcreel-delivery-report-我的-项目-01-20260502-000000",
+      "scenelet-delivery-report-我的-项目-01-20260502-000000",
     );
     expect(getDeliveryReportDownloadBaseName(makeReport({ generated_at: "手动检查" }))).toBe(
-      "arcreel-delivery-report-generated",
+      "scenelet-delivery-report-generated",
     );
-    expect(getDeliveryReportDownloadBaseName(reportWithoutTime)).toBe("arcreel-delivery-report");
+    expect(getDeliveryReportDownloadBaseName(reportWithoutTime)).toBe("scenelet-delivery-report");
   });
 });

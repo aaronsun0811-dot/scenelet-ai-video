@@ -1,5 +1,7 @@
 import json
+import os
 from io import BytesIO
+from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -7,7 +9,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from lib.project_manager import ProjectManager
-from server.auth import CurrentUserInfo, get_current_user, get_current_user_flexible
+from server.auth import CurrentUserInfo, get_current_user, get_current_user_flexible, get_current_user_flexible_optional
 from server.routers import files
 
 
@@ -54,11 +56,12 @@ def _client(monkeypatch, tmp_path, *, static_user_id: str | None = "default"):
     app = FastAPI()
     app.dependency_overrides[get_current_user] = lambda: CurrentUserInfo(id="default", sub="testuser", role="admin")
     if static_user_id is not None:
-        app.dependency_overrides[get_current_user_flexible] = lambda: CurrentUserInfo(
-            id=static_user_id,
-            sub="testuser",
-            role="admin",
-        )
+
+        def user() -> CurrentUserInfo:
+            return CurrentUserInfo(id=static_user_id, sub="testuser", role="admin")
+
+        app.dependency_overrides[get_current_user_flexible] = user
+        app.dependency_overrides[get_current_user_flexible_optional] = user
     app.include_router(files.router, prefix="/api/v1")
     return TestClient(app), pm
 
@@ -268,6 +271,29 @@ class TestFilesRouter:
         with client:
             resp = client.get("/api/v1/files/demo/storyboards/test.png")
             assert resp.status_code == 401
+
+    def test_static_file_access_token_is_path_bound(self, tmp_path, monkeypatch):
+        client, pm = _client(monkeypatch, tmp_path, static_user_id=None)
+        project_path = pm.get_project_path("demo")
+        (project_path / "videos").mkdir(exist_ok=True)
+        (project_path / "videos" / "scene.mp4").write_bytes(b"video")
+
+        with patch.dict(os.environ, {"AUTH_TOKEN_SECRET": "test-secret-key-that-is-at-least-32-bytes"}):
+            with client:
+                token_response = client.post(
+                    "/api/v1/files/demo/access-token",
+                    json={"path": "videos/scene.mp4"},
+                )
+                assert token_response.status_code == 200
+                file_token = token_response.json()["file_token"]
+                assert token_response.json()["expires_in"] == 300
+
+                served = client.get(f"/api/v1/files/demo/videos/scene.mp4?file_token={file_token}")
+                assert served.status_code == 200
+                assert served.content == b"video"
+
+                mismatch = client.get(f"/api/v1/files/demo/videos/other.mp4?file_token={file_token}")
+                assert mismatch.status_code == 403
 
     def test_static_file_hides_other_users_project(self, tmp_path, monkeypatch):
         client, pm = _client(monkeypatch, tmp_path, static_user_id="other-user")

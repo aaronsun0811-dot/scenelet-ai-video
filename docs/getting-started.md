@@ -102,25 +102,25 @@ docker compose version
 
 ```bash
 # 1. 克隆项目
-git clone https://github.com/Scenelet/Scenelet.git
-cd Scenelet/deploy
+git clone https://github.com/aaronsun0811-dot/scenelet-ai-video.git
+cd scenelet-ai-video/deploy
 
 # 2. 创建环境变量文件
 cp .env.example .env
 
 # 3. 启动服务
-docker compose up -d
+docker compose up -d --build
 ```
 
 #### 方式 B：生产部署（PostgreSQL，推荐正式使用）
 
 ```bash
-cd Scenelet/deploy/production
+cd scenelet-ai-video/deploy/production
 
 # 创建环境变量文件（需设置 POSTGRES_PASSWORD）
 cp .env.example .env
 
-docker compose up -d
+docker compose up -d --build
 ```
 
 等待容器启动完成后，在浏览器访问 **http://你的服务器IP:1241**
@@ -260,7 +260,7 @@ AI 根据剧本生成每个场景的静态图片，自动引用角色和线索�
 恭喜你完成了入门教程！接下来你可以：
 
 - 💰 查看 [Google GenAI 费用说明](google-genai-docs/Google视频&图片生成费用参考.md) 和 [火山方舟费用说明](ark-docs/火山方舟费用参考.md) 了解详细定价
-- 🐛 遇到问题？提交 [Issue](https://github.com/Scenelet/Scenelet/issues) 反馈
+- 🐛 遇到问题？提交 [Issue](https://github.com/aaronsun0811-dot/scenelet-ai-video/issues) 反馈
 - 💬 扫码加入飞书交流群，获取帮助和最新动态：
 
 <img src="assets/feishu-qr.png" alt="飞书交流群二维码" width="280">

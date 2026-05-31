@@ -14,8 +14,9 @@ services:
       timeout: 5s
       retries: 5
 
-  arcreel:
-    image: ghcr.io/arcreel/arcreel:latest
+  scenelet:
+    build: ../..
+    image: scenelet:local
     ports:
       - "1241:1241"
     env_file: .env

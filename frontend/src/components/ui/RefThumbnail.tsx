@@ -2,6 +2,7 @@ import { useRef, useState, type ComponentType, type RefObject } from "react";
 import { MapPin, Puzzle, User } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { API } from "@/api";
+import { AuthenticatedImage } from "@/components/ui/AuthenticatedMedia";
 import { Popover } from "@/components/ui/Popover";
 import { useProjectsStore } from "@/stores/projects-store";
 import type { Character, Prop, Scene } from "@/types";
@@ -83,7 +84,7 @@ function RefPopover({
     >
       <div className="flex items-start gap-2.5">
         {sheetPath ? (
-          <img
+          <AuthenticatedImage
             src={API.getFileUrl(projectName, sheetPath, sheetFp)}
             alt={name}
             className="h-[120px] w-[90px] shrink-0 rounded object-cover"
@@ -144,7 +145,7 @@ export function RefThumbnail({
         onMouseLeave={() => setHovered(false)}
       >
         {showImage ? (
-          <img
+          <AuthenticatedImage
             src={API.getFileUrl(projectName, sheetPath, sheetFp)}
             alt={name}
             className={`h-7 w-7 border-2 border-gray-900 object-cover ${meta.shape}`}

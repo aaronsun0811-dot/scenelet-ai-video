@@ -29,6 +29,7 @@ import { useAppStore } from "@/stores/app-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useConfigStatusStore } from "@/stores/config-status-store";
 import { LanguageSwitch } from "@/components/ui/LanguageSwitch";
+import { AuthenticatedImage } from "@/components/ui/AuthenticatedMedia";
 import { AppSidebar } from "@/components/layout/AppSidebar";
 import { ArchiveDiagnosticsDialog } from "@/components/shared/ArchiveDiagnosticsDialog";
 import { Popover } from "@/components/ui/Popover";
@@ -130,8 +131,8 @@ function ProjectCard({ project, onDelete }: { project: ProjectSummary; onDelete:
       {/* Thumbnail or placeholder */}
       <div className="aspect-video w-full overflow-hidden rounded-lg bg-gray-800">
         {project.thumbnail ? (
-          <img
-            src={API.withAuthQuery(project.thumbnail)}
+          <AuthenticatedImage
+            src={project.thumbnail}
             alt={project.title}
             className="h-full w-full object-cover"
           />
@@ -745,7 +746,7 @@ export function ProjectsPage() {
           onCreateProject={() => setShowCreateModal(true)}
         />
 
-        <main className="mx-auto min-w-0 max-w-6xl flex-1 px-6 py-8">
+        <main className="min-w-0 max-w-screen-2xl flex-1 px-6 py-8">
         <div className="mb-6 flex flex-col gap-3 rounded-xl border border-gray-800 bg-gray-900/70 p-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-3 text-sm text-gray-300">
             <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-indigo-500/10 text-indigo-300">
@@ -881,7 +882,7 @@ export function ProjectsPage() {
             <p className="text-sm mt-1">{t("dashboard:start_creating_hint")}</p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
             {projects.map((project) => (
               <ProjectCard key={project.name} project={project} onDelete={() => setDeletingProject(project)} />
             ))}
@@ -1048,7 +1049,7 @@ function exportCreditEntriesCsv(entries: CreditLedgerEntry[]) {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = `arcreel-credit-ledger-${new Date().toISOString().slice(0, 10)}.csv`;
+  anchor.download = `scenelet-credit-ledger-${new Date().toISOString().slice(0, 10)}.csv`;
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();

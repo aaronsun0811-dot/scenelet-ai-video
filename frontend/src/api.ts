@@ -73,6 +73,11 @@ export interface VerifyAuthResponse {
   role: string;
 }
 
+export interface FileAccessTokenResponse {
+  file_token: string;
+  expires_in: number;
+}
+
 export interface AuthCapabilitiesResponse {
   db_users_enabled: boolean;
   registration_enabled: boolean;
@@ -795,7 +800,7 @@ function withAuth(options: RequestInit = {}): RequestInit {
   return { ...options, headers };
 }
 
-/** 为 URL 追加 token query param（用于 EventSource） */
+/** 为 URL 追加 token query param（仅用于 EventSource 等无法设置 Authorization header 的浏览器 API） */
 function withAuthQuery(url: string): string {
   const token = getToken();
   if (!token) return url;
@@ -1644,14 +1649,53 @@ class API {
   ): string {
     const base = `${API_BASE}/files/${encodeURIComponent(projectName)}/${path}`;
     if (cacheBust == null || cacheBust === "") {
-      return withAuthQuery(base);
+      return base;
     }
 
-    return withAuthQuery(`${base}?v=${encodeURIComponent(String(cacheBust))}`);
+    return `${base}?v=${encodeURIComponent(String(cacheBust))}`;
   }
 
-  static withAuthQuery(url: string): string {
-    return withAuthQuery(url);
+  static getSignedFileUrl(
+    projectName: string,
+    path: string,
+    fileToken: string,
+    cacheBust?: number | string | null,
+  ): string {
+    const base = `${API_BASE}/files/${encodeURIComponent(projectName)}/${path}`;
+    const params = new URLSearchParams();
+    if (cacheBust != null && cacheBust !== "") {
+      params.set("v", String(cacheBust));
+    }
+    params.set("file_token", fileToken);
+    return `${base}?${params.toString()}`;
+  }
+
+  static async requestFileAccessToken(
+    projectName: string,
+    path: string,
+  ): Promise<FileAccessTokenResponse> {
+    return this.request(`/files/${encodeURIComponent(projectName)}/access-token`, {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    });
+  }
+
+  static async downloadFileUrl(url: string, filename?: string): Promise<void> {
+    const response = await fetch(url, withAuth());
+    await throwIfNotOk(response, "下载文件失败");
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    try {
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      if (filename) link.download = filename;
+      link.rel = "noreferrer";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+    }
   }
 
   // ==================== Source 文件管理 ====================

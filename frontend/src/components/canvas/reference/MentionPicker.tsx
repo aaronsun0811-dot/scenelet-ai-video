@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { assetColor } from "./asset-colors";
 import { Popover } from "@/components/ui/Popover";
+import { AuthenticatedImage } from "@/components/ui/AuthenticatedMedia";
 import { API } from "@/api";
 import type { AssetKind } from "@/types/reference-video";
 
@@ -287,7 +288,7 @@ export function MentionPicker({
                         }`}
                       >
                         {thumbUrl ? (
-                          <img
+                          <AuthenticatedImage
                             src={thumbUrl}
                             alt=""
                             aria-hidden="true"

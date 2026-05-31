@@ -1,8 +1,9 @@
-import { Component, lazy, Suspense, type ReactNode } from "react";
+import { Component, lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import { Route, Switch, Redirect } from "wouter";
 import { NotFoundPage } from "@/pages/NotFoundPage";
 import { ToastOverlay } from "@/components/layout/ToastOverlay";
 import { useAuthStore } from "@/stores/auth-store";
+import { API } from "@/api";
 
 const LoginPage = lazy(() =>
   import("@/pages/LoginPage").then((module) => ({ default: module.LoginPage })),
@@ -12,6 +13,9 @@ const ProjectsPage = lazy(() =>
 );
 const SystemConfigPage = lazy(() =>
   import("@/components/pages/SystemConfigPage").then((module) => ({ default: module.SystemConfigPage })),
+);
+const AdminPage = lazy(() =>
+  import("@/components/pages/AdminPage").then((module) => ({ default: module.AdminPage })),
 );
 const AssetLibraryPage = lazy(() =>
   import("@/components/pages/AssetLibraryPage").then((module) => ({ default: module.AssetLibraryPage })),
@@ -83,6 +87,46 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+function AdminGuard({ children }: { children: React.ReactNode }) {
+  const { isAuthenticated, isLoading, role } = useAuthStore();
+  const [verifiedRole, setVerifiedRole] = useState<string | null | undefined>(role ?? undefined);
+
+  useEffect(() => {
+    if (!isAuthenticated || role !== null) return;
+
+    let disposed = false;
+    API.verifyAuth()
+      .then((auth) => {
+        if (!disposed) setVerifiedRole(auth.role);
+      })
+      .catch(() => {
+        if (!disposed) setVerifiedRole(null);
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [isAuthenticated, role]);
+
+  if (isLoading) {
+    return <RouteLoading />;
+  }
+
+  if (!isAuthenticated) {
+    return <Redirect to="~/login" />;
+  }
+
+  const effectiveRole = role ?? verifiedRole;
+  if (effectiveRole === undefined) {
+    return <RouteLoading />;
+  }
+
+  if (effectiveRole !== "admin") {
+    return <Redirect to="/app/projects" />;
+  }
+
+  return <>{children}</>;
+}
+
 export function AppRoutes() {
   return (
     <>
@@ -114,6 +158,13 @@ export function AppRoutes() {
               <AuthGuard>
                 <SystemConfigPage />
               </AuthGuard>
+            </Route>
+
+            {/* Admin console */}
+            <Route path="/app/admin">
+              <AdminGuard>
+                <AdminPage />
+              </AdminGuard>
             </Route>
 
             {/* Asset library */}

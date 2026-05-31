@@ -194,7 +194,7 @@ function downloadTextFile(filename: string, content: string, mimeType: string): 
 }
 
 function reconciliationReportFilename(): string {
-  return `arcreel-reconciliation-${new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-")}.csv`;
+  return `scenelet-reconciliation-${new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-")}.csv`;
 }
 
 function renderReconciliationCsv(reconciliation: CreditReconciliationResponse | null): string {

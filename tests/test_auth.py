@@ -251,6 +251,45 @@ class TestDownloadToken:
                 auth_module.verify_download_token(token, "demo")
 
 
+class TestFileAccessToken:
+    def setup_method(self):
+        auth_module._cached_token_secret = None
+
+    def test_create_and_verify_file_access_token(self):
+        """文件访问 token 绑定项目和路径"""
+        with patch.dict(os.environ, {"AUTH_TOKEN_SECRET": "test-secret-key-that-is-at-least-32-bytes"}):
+            token = auth_module.create_file_access_token(
+                "admin",
+                "my-project",
+                "videos/scene.mp4",
+                user_id="user_admin",
+            )
+            payload = auth_module.verify_file_access_token(token, "my-project", "videos/scene.mp4")
+            assert payload["sub"] == "admin"
+            assert payload["uid"] == "user_admin"
+            assert payload["project"] == "my-project"
+            assert payload["path"] == "videos/scene.mp4"
+            assert payload["purpose"] == "file"
+
+    def test_verify_file_access_token_wrong_path(self):
+        """路径不匹配应拒绝，避免项目级 token 被横向复用"""
+        import pytest
+
+        with patch.dict(os.environ, {"AUTH_TOKEN_SECRET": "test-secret-key-that-is-at-least-32-bytes"}):
+            token = auth_module.create_file_access_token("admin", "project-a", "videos/a.mp4")
+            with pytest.raises(ValueError, match="path 不匹配"):
+                auth_module.verify_file_access_token(token, "project-a", "videos/b.mp4")
+
+    def test_verify_file_access_token_wrong_purpose(self):
+        """download token 不能复用为文件访问 token"""
+        import pytest
+
+        with patch.dict(os.environ, {"AUTH_TOKEN_SECRET": "test-secret-key-that-is-at-least-32-bytes"}):
+            token = auth_module.create_download_token("admin", "demo")
+            with pytest.raises(ValueError, match="purpose 不匹配"):
+                auth_module.verify_file_access_token(token, "demo", "videos/a.mp4")
+
+
 class TestPasswordHash:
     """密码哈希功能测试"""
 

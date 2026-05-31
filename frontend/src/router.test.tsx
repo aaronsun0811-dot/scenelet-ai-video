@@ -22,6 +22,10 @@ vi.mock("@/components/pages/ProjectsPage", () => ({
   ProjectsPage: () => <div data-testid="projects-page">Projects Page</div>,
 }));
 
+vi.mock("@/components/pages/AdminPage", () => ({
+  AdminPage: () => <div data-testid="admin-page">Admin Page</div>,
+}));
+
 vi.mock("@/pages/LoginPage", () => ({
   LoginPage: () => <div data-testid="login-page">Login Page</div>,
 }));
@@ -43,7 +47,7 @@ function resetStores(): void {
 describe("AppRoutes", () => {
   beforeEach(() => {
     resetStores();
-    useAuthStore.setState({ isAuthenticated: true, isLoading: false });
+    useAuthStore.setState({ isAuthenticated: true, isLoading: false, role: "admin" });
     vi.restoreAllMocks();
   });
 
@@ -58,7 +62,7 @@ describe("AppRoutes", () => {
   });
 
   it("redirects unauthenticated nested project routes to the root login route", async () => {
-    useAuthStore.setState({ isAuthenticated: false, isLoading: false });
+    useAuthStore.setState({ isAuthenticated: false, isLoading: false, role: null });
     const location = memoryLocation({ path: "/app/projects/demo/episodes/1", record: true });
 
     render(
@@ -69,6 +73,25 @@ describe("AppRoutes", () => {
 
     expect(await screen.findByTestId("login-page")).toBeInTheDocument();
     expect(location.history?.at(-1)).toBe("/login");
+  });
+
+  it("renders the admin console for admin users", async () => {
+    renderAt("/app/admin");
+    expect(await screen.findByTestId("admin-page")).toBeInTheDocument();
+  });
+
+  it("redirects normal users away from the admin console", async () => {
+    useAuthStore.setState({ isAuthenticated: true, isLoading: false, role: "user" });
+    const location = memoryLocation({ path: "/app/admin", record: true });
+
+    render(
+      <Router hook={location.hook}>
+        <AppRoutes />
+      </Router>,
+    );
+
+    expect(await screen.findByTestId("projects-page")).toBeInTheDocument();
+    expect(location.history?.at(-1)).toBe("/app/projects");
   });
 
   it("renders 404 for unknown routes", () => {

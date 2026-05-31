@@ -1,5 +1,6 @@
 import { type ReactNode } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { useAuthenticatedObjectUrl } from "@/hooks/useAuthenticatedObjectUrl";
 
 // ---------------------------------------------------------------------------
 // ImageFlipReveal — 图片切换时的 3D 翻转动画
@@ -22,13 +23,15 @@ export function ImageFlipReveal({
   onError,
   loading,
 }: ImageFlipRevealProps) {
+  const resolvedSrc = useAuthenticatedObjectUrl(src);
+
   return (
     <div style={{ perspective: 800 }} className="h-full w-full">
       <AnimatePresence mode="wait">
-        {src ? (
+        {resolvedSrc ? (
           <motion.img
-            key={src}
-            src={src}
+            key={resolvedSrc}
+            src={resolvedSrc}
             alt={alt}
             loading={loading}
             className={className ?? "h-full w-full object-cover"}

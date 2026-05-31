@@ -19,10 +19,10 @@
 
 <p align="center">
   <a href="#quick-start"><img src="https://img.shields.io/badge/Quick_Start-blue?style=for-the-badge" alt="Quick Start"></a>
-  <a href="https://github.com/Scenelet/Scenelet/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0-green?style=for-the-badge" alt="License"></a>
-  <a href="https://github.com/Scenelet/Scenelet"><img src="https://img.shields.io/github/stars/Scenelet/Scenelet?style=for-the-badge" alt="Stars"></a>
-  <a href="https://github.com/Scenelet/Scenelet/pkgs/container/arcreel"><img src="https://img.shields.io/badge/Docker-ghcr.io-blue?style=for-the-badge&logo=docker" alt="Docker"></a>
-  <a href="https://github.com/Scenelet/Scenelet/actions/workflows/test.yml"><img src="https://img.shields.io/github/actions/workflow/status/Scenelet/Scenelet/test.yml?style=for-the-badge&label=Tests" alt="Tests"></a>
+  <a href="https://github.com/aaronsun0811-dot/scenelet-ai-video/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0-green?style=for-the-badge" alt="License"></a>
+  <a href="https://github.com/aaronsun0811-dot/scenelet-ai-video"><img src="https://img.shields.io/github/stars/aaronsun0811-dot/scenelet-ai-video?style=for-the-badge" alt="Stars"></a>
+  <a href="https://github.com/aaronsun0811-dot/scenelet-ai-video/pkgs/container/scenelet-ai-video"><img src="https://img.shields.io/badge/Docker-ghcr.io-blue?style=for-the-badge&logo=docker" alt="Docker"></a>
+  <a href="https://github.com/aaronsun0811-dot/scenelet-ai-video/actions/workflows/test.yml"><img src="https://img.shields.io/github/actions/workflow/status/aaronsun0811-dot/scenelet-ai-video/test.yml?style=for-the-badge&label=Tests" alt="Tests"></a>
 </p>
 
 <p align="center">
@@ -89,22 +89,24 @@ graph TD
 
 > ⚠️ **OS**: Linux / MacOS / Windows WSL2 (the Claude Agent SDK and several dependencies are POSIX-only; native Windows is not supported — use Docker Desktop or WSL2)
 
+For full installation, source-development, and PostgreSQL deployment instructions, see [INSTALL.md](INSTALL.md).
+
 ### Default Deployment (SQLite)
 
 ```bash
-git clone https://github.com/Scenelet/Scenelet.git
-cd Scenelet/deploy
+git clone https://github.com/aaronsun0811-dot/scenelet-ai-video.git
+cd scenelet-ai-video/deploy
 cp .env.example .env
-docker compose up -d
+docker compose up -d --build
 # Visit http://localhost:1241
 ```
 
 ### Production Deployment (PostgreSQL)
 
 ```bash
-cd Scenelet/deploy/production
+cd scenelet-ai-video/deploy/production
 cp .env.example .env    # Set POSTGRES_PASSWORD
-docker compose up -d
+docker compose up -d --build
 ```
 
 After first launch, log in with the default account (username `admin`, password set via `AUTH_PASSWORD` in `.env`; if not set, it will be auto-generated and written back to `.env` on first startup). Then go to **Settings** (`/settings`) to complete configuration:

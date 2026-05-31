@@ -6,6 +6,7 @@ import {
   getTemplatesByCategory,
   type StyleCategory,
 } from "@/data/style-templates";
+import { AuthenticatedImage } from "@/components/ui/AuthenticatedMedia";
 
 export interface StylePickerValue {
   mode: "template" | "custom";
@@ -162,7 +163,7 @@ export function StylePicker({ value, onChange }: StylePickerProps) {
 
           {value.uploadedPreview ? (
             <div className="relative rounded-lg border border-gray-700 overflow-hidden">
-              <img
+              <AuthenticatedImage
                 src={value.uploadedPreview}
                 alt={t("templates:upload_reference")}
                 className="w-full h-40 object-cover"

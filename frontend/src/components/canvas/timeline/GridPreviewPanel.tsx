@@ -15,6 +15,7 @@ import {
 import { motion, AnimatePresence } from "framer-motion";
 import { useTranslation } from "react-i18next";
 import { API } from "@/api";
+import { AuthenticatedImage } from "@/components/ui/AuthenticatedMedia";
 import { useGenerationPreflightGate } from "@/components/ui/GenerationPreflight";
 import { errMsg } from "@/utils/async";
 import type { GridGeneration, ReferenceImage } from "@/types/grid";
@@ -118,7 +119,7 @@ function ReferenceImageStrip({
                   : "border-sky-800/30 group-hover:border-sky-500/50"
               }`}
             >
-              <img
+              <AuthenticatedImage
                 src={API.getFileUrl(projectName, ref.path, refreshKey)}
                 alt={ref.name}
                 className="block aspect-square w-full object-cover transition-transform duration-200 group-hover:scale-105"
@@ -365,7 +366,7 @@ export function GridPreviewPanel({
                   {/* Composite image + metadata */}
                   {imageUrl ? (
                     <div className="overflow-hidden rounded-md border border-gray-800/50 bg-gray-900/40">
-                      <img
+                      <AuthenticatedImage
                         src={imageUrl}
                         alt={t("grid_composite_image_alt")}
                         className="block max-h-64 w-full object-contain bg-black/20"

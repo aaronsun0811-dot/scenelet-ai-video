@@ -146,6 +146,7 @@ def verify_token(token: str) -> dict | None:
 
 
 DOWNLOAD_TOKEN_EXPIRY_SECONDS = 300  # 5 分钟
+FILE_ACCESS_TOKEN_EXPIRY_SECONDS = 300  # 5 分钟
 
 
 def create_download_token(username: str, project_name: str, *, user_id: str | None = None) -> str:
@@ -179,6 +180,49 @@ def verify_download_token(token: str, project_name: str) -> dict:
         raise ValueError("token purpose 不匹配")
     if payload.get("project") != project_name:
         raise ValueError("token project 不匹配")
+    return payload
+
+
+def _normalize_file_access_path(path: str) -> str:
+    normalized = str(path or "").lstrip("/")
+    if not normalized:
+        raise ValueError("token path 不匹配")
+    return normalized
+
+
+def create_file_access_token(username: str, project_name: str, path: str, *, user_id: str | None = None) -> str:
+    """签发短时效、路径绑定的项目文件访问 token，用于浏览器原生媒体播放"""
+    normalized_path = _normalize_file_access_path(path)
+    now = time.time()
+    payload = {
+        "sub": username,
+        "project": project_name,
+        "path": normalized_path,
+        "purpose": "file",
+        "iat": now,
+        "exp": now + FILE_ACCESS_TOKEN_EXPIRY_SECONDS,
+    }
+    if user_id:
+        payload["uid"] = user_id
+    return jwt.encode(payload, get_token_secret(), algorithm="HS256")
+
+
+def verify_file_access_token(token: str, project_name: str, path: str) -> dict:
+    """验证项目文件访问 token。
+
+    Raises:
+        jwt.ExpiredSignatureError: token 已过期
+        jwt.InvalidTokenError: token 无效
+        ValueError: purpose、project 或 path 不匹配
+    """
+    normalized_path = _normalize_file_access_path(path)
+    payload = jwt.decode(token, get_token_secret(), algorithms=["HS256"])
+    if payload.get("purpose") != "file":
+        raise ValueError("token purpose 不匹配")
+    if payload.get("project") != project_name:
+        raise ValueError("token project 不匹配")
+    if payload.get("path") != normalized_path:
+        raise ValueError("token path 不匹配")
     return payload
 
 
@@ -492,6 +536,20 @@ async def get_current_user_flexible(
     return _payload_to_user(payload)
 
 
+async def get_current_user_flexible_optional(
+    token: Annotated[str | None, Depends(oauth2_scheme_optional)] = None,
+    query_token: str | None = Query(None, alias="token"),
+    session: Annotated[AsyncSession | None, Depends(get_async_session)] = None,
+) -> CurrentUserInfo | None:
+    """可选认证依赖 — 同时支持 Authorization header 和 ?token=，缺失时返回 None。"""
+    raw = token or query_token
+    if not raw:
+        return None
+    payload = await _verify_and_get_payload_async(raw, session=session)
+    return _payload_to_user(payload)
+
+
 # Type aliases for FastAPI dependency injection
 CurrentUser = Annotated[CurrentUserInfo, Depends(get_current_user)]
 CurrentUserFlexible = Annotated[CurrentUserInfo, Depends(get_current_user_flexible)]
+CurrentUserFlexibleOptional = Annotated[CurrentUserInfo | None, Depends(get_current_user_flexible_optional)]

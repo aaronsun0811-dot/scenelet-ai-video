@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Check, ExternalLink, MapPin, Puzzle, Search, User, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { API } from "@/api";
+import { AuthenticatedImage } from "@/components/ui/AuthenticatedMedia";
 import { useEscapeClose } from "@/hooks/useEscapeClose";
 import { useFocusTrap } from "@/hooks/useFocusTrap";
 import { useProjectsStore } from "@/stores/projects-store";
@@ -384,7 +385,7 @@ function Row({ row, selected, onToggle, projectName, staleHint }: RowProps) {
       }`}
     >
       {showImage ? (
-        <img
+        <AuthenticatedImage
           src={API.getFileUrl(projectName, row.thumbPath!, sheetFp)}
           alt={row.name}
           className={`h-8 w-8 shrink-0 ${thumbShape} object-cover`}

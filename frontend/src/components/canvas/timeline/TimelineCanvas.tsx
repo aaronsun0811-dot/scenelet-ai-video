@@ -7,6 +7,7 @@ import { SegmentCard } from "./SegmentCard";
 import { GridSegmentGroup } from "./GridSegmentGroup";
 import { PreprocessingView } from "./PreprocessingView";
 import { useGenerationPreflightGate } from "@/components/ui/GenerationPreflight";
+import { AuthenticatedImage } from "@/components/ui/AuthenticatedMedia";
 import { useScrollTarget } from "@/hooks/useScrollTarget";
 import { useAppStore } from "@/stores/app-store";
 import { useCostStore } from "@/stores/cost-store";
@@ -273,7 +274,7 @@ function ArtifactPreview({
 
   if (previewUrl) {
     return (
-      <img
+      <AuthenticatedImage
         src={previewUrl}
         alt={item.label}
         loading="lazy"

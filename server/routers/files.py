@@ -14,8 +14,10 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-from fastapi import APIRouter, Body, File, HTTPException, Request, UploadFile
+import jwt
+from fastapi import APIRouter, Body, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse
+from pydantic import BaseModel
 
 from lib import PROJECT_ROOT
 from lib.asset_types import ASSET_TYPES
@@ -32,13 +34,23 @@ from lib.source_loader import (
     SourceLoader,
     UnsupportedFormatError,
 )
-from server.auth import CurrentUser, CurrentUserFlexible
+from server.auth import (
+    FILE_ACCESS_TOKEN_EXPIRY_SECONDS,
+    CurrentUser,
+    CurrentUserFlexibleOptional,
+    create_file_access_token,
+    verify_file_access_token,
+)
 from server.services.project_access import load_project_for_user, project_manager_for_user
 
 router = APIRouter()
 
 # 初始化项目管理器
 pm = ProjectManager(PROJECT_ROOT / "projects")
+
+
+class FileAccessTokenRequest(BaseModel):
+    path: str
 
 
 def get_project_manager() -> ProjectManager:
@@ -51,6 +63,31 @@ def get_project_manager_for_user(user_id: str | None) -> ProjectManager:
 
 def _ensure_project_access(project_name: str, user_id: str, _t: Translator) -> dict:
     return load_project_for_user(get_project_manager(), project_name, user_id=user_id, translate=_t)
+
+
+def _normalize_project_file_request_path(path: str, _t: Translator) -> str:
+    normalized = str(path or "").lstrip("/")
+    if not normalized or "\0" in normalized:
+        raise HTTPException(status_code=403, detail=_t("forbidden_access"))
+    return normalized
+
+
+def _resolve_project_file_path(project_name: str, path: str, user_id: str, _t: Translator) -> Path:
+    normalized_path = _normalize_project_file_request_path(path, _t)
+    _ensure_project_access(project_name, user_id, _t)
+    project_dir = get_project_manager_for_user(user_id).get_project_path(project_name)
+    project_root = project_dir.resolve(strict=False)
+    file_path = (project_dir / normalized_path).resolve(strict=False)
+
+    try:
+        file_path.relative_to(project_root)
+    except ValueError:
+        raise HTTPException(status_code=403, detail=_t("forbidden_access"))
+
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail=_t("file_not_found", path=normalized_path))
+
+    return file_path
 
 
 def _source_file_path(project_dir: Path, filename: str, _t: Translator) -> Path:
@@ -103,38 +140,61 @@ ALLOWED_EXTENSIONS = {
 }
 
 
+@router.post("/files/{project_name}/access-token")
+async def create_project_file_access_token(
+    project_name: str,
+    body: FileAccessTokenRequest,
+    _user: CurrentUser,
+    _t: Translator,
+):
+    """签发短期、路径绑定的项目文件访问 token，用于浏览器原生媒体加载。"""
+    try:
+        normalized_path = _normalize_project_file_request_path(body.path, _t)
+        await asyncio.to_thread(_resolve_project_file_path, project_name, normalized_path, _user.id, _t)
+        token = create_file_access_token(_user.sub, project_name, normalized_path, user_id=_user.id)
+        return {"file_token": token, "expires_in": FILE_ACCESS_TOKEN_EXPIRY_SECONDS}
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=_t("project_not_found", name=project_name))
+
+
 @router.get("/files/{project_name}/{path:path}")
 async def serve_project_file(
     project_name: str,
     path: str,
     request: Request,
-    _user: CurrentUserFlexible,
     _t: Translator,
+    _user: CurrentUserFlexibleOptional,
+    file_token: str | None = Query(None),
 ):
     """服务项目内的静态文件（图片/视频）"""
     try:
+        normalized_path = _normalize_project_file_request_path(path, _t)
+        user_id = _user.id if _user is not None else None
+        if user_id is None:
+            if not file_token:
+                raise HTTPException(
+                    status_code=401,
+                    detail="缺少认证 token",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            try:
+                payload = verify_file_access_token(file_token, project_name, normalized_path)
+            except jwt.ExpiredSignatureError:
+                raise HTTPException(status_code=401, detail=_t("download_token_invalid"))
+            except (jwt.InvalidTokenError, ValueError):
+                raise HTTPException(status_code=403, detail=_t("download_token_mismatch"))
+            user_id = str(payload.get("uid") or "")
+            if not user_id:
+                raise HTTPException(status_code=401, detail=_t("download_token_invalid"))
 
         def _sync():
-            _ensure_project_access(project_name, _user.id, _t)
-            project_dir = get_project_manager_for_user(_user.id).get_project_path(project_name)
-            file_path = project_dir / path
-
-            if not file_path.exists():
-                raise HTTPException(status_code=404, detail=_t("file_not_found", path=path))
-
-            # 安全检查：确保路径在项目目录内
-            try:
-                file_path.resolve().relative_to(project_dir.resolve())
-            except ValueError:
-                raise HTTPException(status_code=403, detail=_t("forbidden_access"))
-
-            return file_path
+            return _resolve_project_file_path(project_name, normalized_path, user_id, _t)
 
         file_path = await asyncio.to_thread(_sync)
 
         # 内容寻址缓存：带 ?v= 参数或 versions/ 路径时设 immutable
         headers = {}
-        if request.query_params.get("v") or path.startswith("versions/"):
+        if request.query_params.get("v") or normalized_path.startswith("versions/"):
             headers["Cache-Control"] = "public, max-age=31536000, immutable"
 
         return FileResponse(file_path, headers=headers)

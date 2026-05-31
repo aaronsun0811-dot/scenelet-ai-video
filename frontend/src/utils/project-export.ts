@@ -102,7 +102,7 @@ export function getDeliveryReportDownloadBaseName(
   report: ProjectArchiveDeliveryReport,
   contextName?: string | null,
 ): string {
-  const parts = ["arcreel-delivery-report"];
+  const parts = ["scenelet-delivery-report"];
   const context = contextName ? sanitizeFilenamePart(contextName) : "";
   if (context) parts.push(context);
 

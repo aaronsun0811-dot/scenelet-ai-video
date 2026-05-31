@@ -19,10 +19,10 @@
 
 <p align="center">
   <a href="#快速开始"><img src="https://img.shields.io/badge/Quick_Start-blue?style=for-the-badge" alt="Quick Start"></a>
-  <a href="https://github.com/Scenelet/Scenelet/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0-green?style=for-the-badge" alt="License"></a>
-  <a href="https://github.com/Scenelet/Scenelet"><img src="https://img.shields.io/github/stars/Scenelet/Scenelet?style=for-the-badge" alt="Stars"></a>
-  <a href="https://github.com/Scenelet/Scenelet/pkgs/container/arcreel"><img src="https://img.shields.io/badge/Docker-ghcr.io-blue?style=for-the-badge&logo=docker" alt="Docker"></a>
-  <a href="https://github.com/Scenelet/Scenelet/actions/workflows/test.yml"><img src="https://img.shields.io/github/actions/workflow/status/Scenelet/Scenelet/test.yml?style=for-the-badge&label=Tests" alt="Tests"></a>
+  <a href="https://github.com/aaronsun0811-dot/scenelet-ai-video/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0-green?style=for-the-badge" alt="License"></a>
+  <a href="https://github.com/aaronsun0811-dot/scenelet-ai-video"><img src="https://img.shields.io/github/stars/aaronsun0811-dot/scenelet-ai-video?style=for-the-badge" alt="Stars"></a>
+  <a href="https://github.com/aaronsun0811-dot/scenelet-ai-video/pkgs/container/scenelet-ai-video"><img src="https://img.shields.io/badge/Docker-ghcr.io-blue?style=for-the-badge&logo=docker" alt="Docker"></a>
+  <a href="https://github.com/aaronsun0811-dot/scenelet-ai-video/actions/workflows/test.yml"><img src="https://img.shields.io/github/actions/workflow/status/aaronsun0811-dot/scenelet-ai-video/test.yml?style=for-the-badge&label=Tests" alt="Tests"></a>
 </p>
 
 <p align="center">
@@ -89,22 +89,24 @@ graph TD
 
 > ⚠️ **操作系统**：Linux / MacOS / Windows WSL2（Claude Agent SDK 及部分依赖仅兼容 POSIX 环境，Windows 原生暂不支持，请使用 Docker Desktop 或 WSL2）
 
+完整安装、源码开发和 PostgreSQL 部署说明见 [INSTALL.md](INSTALL.md)。
+
 ### 默认部署（SQLite）
 
 ```bash
-git clone https://github.com/Scenelet/Scenelet.git
-cd Scenelet/deploy
+git clone https://github.com/aaronsun0811-dot/scenelet-ai-video.git
+cd scenelet-ai-video/deploy
 cp .env.example .env
-docker compose up -d
+docker compose up -d --build
 # 访问 http://localhost:1241
 ```
 
 ### 生产部署（PostgreSQL）
 
 ```bash
-cd Scenelet/deploy/production
+cd scenelet-ai-video/deploy/production
 cp .env.example .env    # 需设置 POSTGRES_PASSWORD
-docker compose up -d
+docker compose up -d --build
 ```
 
 首次启动后，使用默认账号登录（用户名 `admin`，密码在 `.env` 中通过 `AUTH_PASSWORD` 设置；未设置则首次启动时自动生成并回写到 `.env`），前往 **设置页**（`/settings`）完成配置：

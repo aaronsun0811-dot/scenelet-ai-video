@@ -5,6 +5,7 @@ import { API } from "@/api";
 import { AddToLibraryButton } from "@/components/assets/AddToLibraryButton";
 import { VersionTimeMachine } from "@/components/canvas/timeline/VersionTimeMachine";
 import { AspectFrame } from "@/components/ui/AspectFrame";
+import { AuthenticatedImage } from "@/components/ui/AuthenticatedMedia";
 import { GenerateButton } from "@/components/ui/GenerateButton";
 import { PreviewableImageFrame } from "@/components/ui/PreviewableImageFrame";
 import { useAppStore } from "@/stores/app-store";
@@ -181,7 +182,7 @@ export function SceneCard({
         >
           <AspectFrame ratio="16:9">
             {sheetUrl && !imgError ? (
-              <img
+              <AuthenticatedImage
                 src={sheetUrl}
                 alt={`${name} ${t("scene_design")}`}
                 className="h-full w-full object-cover"

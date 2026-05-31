@@ -20,6 +20,7 @@ import {
 import { useLocation } from "wouter";
 import type { EpisodeMeta, ProjectArchiveModelRuleAuditManifest, ProjectData, TravelRouteAssetManifest } from "@/types";
 import { API, ApiRequestError, ConflictError } from "@/api";
+import { AuthenticatedImage } from "@/components/ui/AuthenticatedMedia";
 import { useProjectsStore } from "@/stores/projects-store";
 import { useAppStore } from "@/stores/app-store";
 import { useCostStore } from "@/stores/cost-store";
@@ -845,7 +846,7 @@ function TravelRouteAssetPreviewDialog({
                   <article key={ref.id || ref.path} className="rounded-xl border border-gray-800 bg-gray-900/70 p-3">
                     <div className="aspect-video overflow-hidden rounded-lg border border-gray-800 bg-gray-950">
                       {src ? (
-                        <img src={src} alt={ref.path} className="h-full w-full object-cover" />
+                        <AuthenticatedImage src={src} alt={ref.path} className="h-full w-full object-cover" />
                       ) : (
                         <div className="flex h-full items-center justify-center text-xs text-gray-500">
                           {t("travel_route_asset_preview_ref_unavailable")}
@@ -1300,7 +1301,7 @@ function TravelVideoRoutePreviewPanel({
               <p className="text-[11px] text-gray-500">{t("travel_video_reference_images")}</p>
               <div className="mt-2 grid grid-cols-3 gap-2 sm:grid-cols-4">
                 {referenceImages.slice(0, 4).map((path) => (
-                  <img
+                  <AuthenticatedImage
                     key={path}
                     src={API.getFileUrl(projectName, path)}
                     alt={t("travel_video_reference_image_alt")}
