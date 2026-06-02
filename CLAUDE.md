@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-ArcReel 是一个 AI 视频生成平台，将小说转化为短视频。三层架构：
+Scenelet 是一个 AI 视频生成平台，将小说转化为短视频。三层架构：
 
 ```
 frontend/ (React SPA)  →  server/ (FastAPI)  →  lib/ (核心库)
@@ -87,7 +87,7 @@ ConfigService（`service.py`）→ Repository（持久化 + 密钥脱敏）→ R
 - `models/` — ORM 模型：Task / ApiCall / ApiKey / AgentSession / Config / Credential / User / CustomProvider / CustomProviderModel
 - `repositories/` — 异步 Repository：Task / Usage / Session / ApiKey / Credential（多 API Key + 活跃切换）/ CustomProvider
 
-数据库：开发 SQLite（`projects/.arcreel.db`），生产 PostgreSQL（`asyncpg`）
+数据库：开发 SQLite（`projects/.scenelet.db`，兼容旧 `projects/.arcreel.db`），生产 PostgreSQL（`asyncpg`）
 
 ### Agent Runtime（Claude Agent SDK 集成）
 

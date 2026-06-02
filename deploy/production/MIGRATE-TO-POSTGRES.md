@@ -56,7 +56,7 @@ docker compose ps  # 确认 postgres 状态为 healthy
 docker compose run --rm scenelet bash -c "
   apt-get update && apt-get install -y --no-install-recommends pgloader &&
   pgloader sqlite:///app/projects/.scenelet.db \
-           postgresql://arcreel:\${POSTGRES_PASSWORD}@postgres:5432/arcreel
+           postgresql://scenelet:\${POSTGRES_PASSWORD}@postgres:5432/scenelet
 "
 ```
 
@@ -66,7 +66,7 @@ docker compose run --rm scenelet bash -c "
 ### 6. 验证数据
 
 ```bash
-docker compose exec postgres psql -U arcreel -d arcreel -c "
+docker compose exec postgres psql -U scenelet -d scenelet -c "
   SELECT 'tasks' AS tbl, COUNT(*) FROM tasks
   UNION ALL
   SELECT 'api_calls', COUNT(*) FROM api_calls

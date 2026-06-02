@@ -2,14 +2,14 @@ services:
   postgres:
     image: postgres:18-alpine
     environment:
-      POSTGRES_USER: arcreel
+      POSTGRES_USER: scenelet
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请在 .env 中设置 POSTGRES_PASSWORD}
-      POSTGRES_DB: arcreel
+      POSTGRES_DB: scenelet
     volumes:
       - ./pgdata:/var/lib/postgresql
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U arcreel"]
+      test: ["CMD-SHELL", "pg_isready -U scenelet"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -21,7 +21,7 @@ services:
       - "1241:1241"
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://arcreel:${POSTGRES_PASSWORD}@postgres:5432/arcreel
+      DATABASE_URL: postgresql+asyncpg://scenelet:${POSTGRES_PASSWORD}@postgres:5432/scenelet
     volumes:
       - ./.env:/app/.env
       - ./projects:/app/projects

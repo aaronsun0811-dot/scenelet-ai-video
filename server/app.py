@@ -2,7 +2,7 @@
 视频项目管理 WebUI - FastAPI 主应用
 
 启动方式:
-    cd ArcReel
+    cd Scenelet
     uv run uvicorn server.app:app --reload --port 1241
 """
 
@@ -65,9 +65,10 @@ async def _migrate_source_encoding_on_startup(projects_root: Path) -> dict[str, 
         return summary
 
     def _run_one(project_dir: Path) -> dict:
-        marker_dir = project_dir / ".arcreel"
+        marker_dir = project_dir / ".scenelet"
         marker = marker_dir / "source_encoding_migrated"
-        if marker.exists():
+        legacy_marker = project_dir / ".arcreel" / "source_encoding_migrated"
+        if marker.exists() or legacy_marker.exists():
             return {"skipped": True}
         try:
             result = migrate_project_source_encoding(project_dir)

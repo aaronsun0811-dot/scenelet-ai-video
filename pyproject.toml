@@ -1,5 +1,5 @@
 [project]
-name = "arcreel"
+name = "scenelet"
 # managed by release-please — do not bump manually
 version = "0.11.1"
 description = "AI video generation workspace"
