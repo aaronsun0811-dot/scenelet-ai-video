@@ -422,19 +422,20 @@ wheels = [
 
 [[package]]
 name = "claude-agent-sdk"
-version = "0.1.61"
+version = "0.2.87"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
     { name = "mcp" },
+    { name = "sniffio" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/15/31/e98b9e1d20e4e6e7c8e52cd9b30b63c8686a9781e9db0d941dc7801453b9/claude_agent_sdk-0.1.61.tar.gz", hash = "sha256:2dd6bcc8ed5a13b1a70dc986a01519537e9e690636bb278b942ede955fa9a09a", size = 127793, upload-time = "2026-04-16T22:02:09.092Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/26/dc/e2afd59a1dd6484b6500245fa2331a0d8c0b68e6c180bc29d8ce9540f38a/claude_agent_sdk-0.2.87.tar.gz", hash = "sha256:56f02a49a97f7be37e0cd7323494d1c09e52fb0db7ab94f53bba8a230bb4bd0e", size = 252063, upload-time = "2026-05-23T04:19:25Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c6/5f/8236b03d31c6151c164f9090e5ba68f189a56ec8a9a482ea8c0e0600c303/claude_agent_sdk-0.1.61-py3-none-macosx_11_0_arm64.whl", hash = "sha256:22d091e0b9b310125e2c6fcd454075f0f71c987db86b79153df91bdb412b9793", size = 60131827, upload-time = "2026-04-16T22:02:12.772Z" },
-    { url = "https://files.pythonhosted.org/packages/5e/b3/a86c5ed60000fddfc6d081861480c15399658479f484e05d610f55a3fe3d/claude_agent_sdk-0.1.61-py3-none-macosx_11_0_x86_64.whl", hash = "sha256:7d0d9020b8143a26460180a4d36609cb70c26f821f2dd20d246c4449de44bdad", size = 61951661, upload-time = "2026-04-16T22:02:17.275Z" },
-    { url = "https://files.pythonhosted.org/packages/5b/9f/44a35c80237dd1a6bd8a80e74c4fbb60ba6e36b1eb079f9ce1dd1f3e45a1/claude_agent_sdk-0.1.61-py3-none-manylinux_2_17_aarch64.whl", hash = "sha256:c63362ed0acb95b89d522d3a377e030b32d1169989f3e45fce85f40ed8f21da1", size = 73384844, upload-time = "2026-04-16T22:02:22.428Z" },
-    { url = "https://files.pythonhosted.org/packages/c3/5b/0822bcacb9fc02ecd1349bb4f81aa6c9c2f0588aafd10ef6ab419a5dc836/claude_agent_sdk-0.1.61-py3-none-manylinux_2_17_x86_64.whl", hash = "sha256:255e698bf6f78f1ed6790b2dbfa3b56870a9efbef1bb4ca6b118418eed7b715c", size = 73526187, upload-time = "2026-04-16T22:02:27.451Z" },
-    { url = "https://files.pythonhosted.org/packages/2e/77/999255728564ab8d872dca9ddd05dccef5186a8f2596421981b34e5c8094/claude_agent_sdk-0.1.61-py3-none-win_amd64.whl", hash = "sha256:bd3cc54476baabc050012b1a4577d9f59a0ab2545bb4dea64c61baa0e7dfb0c3", size = 75667458, upload-time = "2026-04-16T22:02:33.11Z" },
+    { url = "https://files.pythonhosted.org/packages/6c/4e/b83c4c6ec1e0b63e9d4d58ba9a5abfd9936c55b8ee4c06b88f5e93bdfd70/claude_agent_sdk-0.2.87-py3-none-macosx_11_0_arm64.whl", hash = "sha256:52204a9609dec3aa96032afd48c07d72e05d13311faf614978f17b61326e6e31", size = 63037960, upload-time = "2026-05-23T04:19:29.056Z" },
+    { url = "https://files.pythonhosted.org/packages/13/d7/5fb02260c5b95c66e108c35e046d4d66011921251f7896274b6b21594f14/claude_agent_sdk-0.2.87-py3-none-macosx_11_0_x86_64.whl", hash = "sha256:1713e34e50b830ecac54386d39af14e3a2775f833f1ef715eb53566eaa1b6325", size = 65095745, upload-time = "2026-05-23T04:19:32.533Z" },
+    { url = "https://files.pythonhosted.org/packages/1d/84/1061f6580bbbc78de629467abf051cdbbabe71b982297b401e3fde65c7e0/claude_agent_sdk-0.2.87-py3-none-manylinux_2_17_aarch64.whl", hash = "sha256:e9e23119d2a02ad1ea1a2707214db98f5baf2c8809577186629843ddfcb8ec18", size = 72725120, upload-time = "2026-05-23T04:19:36.539Z" },
+    { url = "https://files.pythonhosted.org/packages/04/50/449f5044d76d9de18cf6a9f4b1c9386a74f41b4e2da5312df245d9dd23ef/claude_agent_sdk-0.2.87-py3-none-manylinux_2_17_x86_64.whl", hash = "sha256:5ac525d9ae3481296df5639d005e12ce2b6b0427426991f35da64db30be25c6e", size = 72875504, upload-time = "2026-05-23T04:19:40.839Z" },
+    { url = "https://files.pythonhosted.org/packages/80/dd/3f9d7c491d5a98138d293192b31cc9ed792d3552b3a7e276163d7fe2d43a/claude_agent_sdk-0.2.87-py3-none-win_amd64.whl", hash = "sha256:f34973669a1efaeb1543e7b22d7b22feefd8af2fae3adfd39181635077dae432", size = 73514880, upload-time = "2026-05-23T04:19:44.65Z" },
 ]
 
 [[package]]
@@ -817,7 +818,7 @@ requests = [
 
 [[package]]
 name = "google-genai"
-version = "1.73.1"
+version = "2.7.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -831,9 +832,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/3d/d8/40f5f107e5a2976bbac52d421f04d14fc221b55a8f05e66be44b2f739fe6/google_genai-1.73.1.tar.gz", hash = "sha256:b637e3a3b9e2eccc46f27136d470165803de84eca52abfed2e7352081a4d5a15", size = 530998, upload-time = "2026-04-14T21:06:19.153Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a7/7b/6eb3b3d545b6bb4c374acba1ccf91b0f33b605e551536a6243cfcef2f07f/google_genai-2.7.0.tar.gz", hash = "sha256:3c6f32f5ced9877ededd1b384b5e5b7f09c20046ec3390b662b16d8cd1882ac5", size = 555853, upload-time = "2026-05-28T15:39:24.58Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/65/af/508e0528015240d710c6763f7c89ff44fab9a94a80b4377e265d692cbfd6/google_genai-1.73.1-py3-none-any.whl", hash = "sha256:af2d2287d25e42a187de19811ef33beb2e347c7e2bdb4dc8c467d78254e43a2c", size = 783595, upload-time = "2026-04-14T21:06:17.464Z" },
+    { url = "https://files.pythonhosted.org/packages/3c/dd/7a8be39e9d698e80e9db796514efbc6083dbd787bdb9a101e8ba47248e5e/google_genai-2.7.0-py3-none-any.whl", hash = "sha256:21cac381e09a869151706aba797b6a4f96cfe92c484e13204d092caee7ff11cb", size = 822545, upload-time = "2026-05-28T15:39:22.907Z" },
 ]
 
 [[package]]
@@ -1543,7 +1544,7 @@ wheels = [
 
 [[package]]
 name = "openai"
-version = "2.32.0"
+version = "2.40.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -1555,9 +1556,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ed/59/bdcc6b759b8c42dd73afaf5bf8f902c04b37987a5514dbc1c64dba390fef/openai-2.32.0.tar.gz", hash = "sha256:c54b27a9e4cb8d51f0dd94972ffd1a04437efeb259a9e60d8922b8bd26fe55e0", size = 693286, upload-time = "2026-04-15T22:28:19.434Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f9/9f/136562ec6c3b1a50fe06eb0bb34ed21f0d7426ec0140e5cc43ac785b69a5/openai-2.40.0.tar.gz", hash = "sha256:9a756f91f274a24ad6026cbcb2042fd356c8d4a10e8f347b08d34465e585f7a2", size = 781177, upload-time = "2026-06-01T21:48:23.878Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1e/c1/d6e64ccd0536bf616556f0cad2b6d94a8125f508d25cfd814b1d2db4e2f1/openai-2.32.0-py3-none-any.whl", hash = "sha256:4dcc9badeb4bf54ad0d187453742f290226d30150890b7890711bda4f32f192f", size = 1162570, upload-time = "2026-04-15T22:28:17.714Z" },
+    { url = "https://files.pythonhosted.org/packages/f6/46/180e14be801a75bc13f234cb1b594b232adeb9c84e60a9ab1832e8333591/openai-2.40.0-py3-none-any.whl", hash = "sha256:2b205637ff214477f9ce9ab035e9f494db0e3fa8f1e599008953735fbf6ff1ff", size = 1350935, upload-time = "2026-06-01T21:48:21.462Z" },
 ]
 
 [[package]]
@@ -2726,7 +2727,7 @@ wheels = [
 
 [[package]]
 name = "xai-sdk"
-version = "1.11.0"
+version = "1.15.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -2738,9 +2739,9 @@ dependencies = [
     { name = "pydantic" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/49/32/bb8385f7a3b05ce406b689aa000c9a34289caa1526f1c093a1cefc0d9695/xai_sdk-1.11.0.tar.gz", hash = "sha256:ca87a830d310fb8e06fba44fb2a8c5cdf0d9f716b61126eddd51b7f416a63932", size = 404313, upload-time = "2026-03-27T18:23:10.091Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/33/0a/74a835cff3c2c5135bcbdca152eed1bd0b7b2c9156e457dfc0d9af987df9/xai_sdk-1.15.0.tar.gz", hash = "sha256:6508b702d01da9c55c15cdcb329c4ad58eb9251340b2514d0974bcba11e764e3", size = 433102, upload-time = "2026-05-30T01:42:15.977Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/04/76/86d9a3589c725ce825d2ed3e7cb3ecf7f956d3fd015353d52197bb341bcd/xai_sdk-1.11.0-py3-none-any.whl", hash = "sha256:fe58ce6d8f8115ae8bd57ded57bcd847d0bb7cb28bb7b236abefd4626df1ed8d", size = 251388, upload-time = "2026-03-27T18:23:08.573Z" },
+    { url = "https://files.pythonhosted.org/packages/f5/39/7513677c0dafc5171ca4a78f9af3a2acfb9c8798aab62bc4464452ac277f/xai_sdk-1.15.0-py3-none-any.whl", hash = "sha256:de1dcb856941bcbc64c0e61b7202395593c1950e0e00e6aa0ca7657448c03aca", size = 260289, upload-time = "2026-05-30T01:42:14.431Z" },
 ]
 
 [[package]]
